@@ -1,0 +1,16 @@
+# Versiones de todo el proyecto, en un único sitio.
+
+[versions]
+kotlin = "2.2.20"
+compose = "1.9.3"
+playwright = "1.52.0"
+jackson = "2.18.2"
+
+[libraries]
+playwright = { module = "com.microsoft.playwright:playwright", version.ref = "playwright" }
+jackson-databind = { module = "com.fasterxml.jackson.core:jackson-databind", version.ref = "jackson" }
+
+[plugins]
+kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
+kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
+compose = { id = "org.jetbrains.compose", version.ref = "compose" }

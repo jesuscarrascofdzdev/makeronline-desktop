@@ -1,0 +1,26 @@
+# Gradle e IntelliJ
+.gradle/
+build/
+.kotlin/
+.idea/
+*.iml
+out/
+!gradle/wrapper/gradle-wrapper.jar
+
+# Sesión de Chrome (cookies de Google y MakerOnline): NUNCA subir
+chrome-profile/
+
+# Datos del usuario: modelos, descargas, lista de usuarios y registro
+subidas/
+modelos/
+modelos-descargados/
+usuarios.json
+descargados.txt
+**/resultado.png
+**/error.png
+**/error.txt
+**/errores.txt
+**/error_*.png
+
+# Candado que impide lanzar dos programas a la vez
+.agente.lock
