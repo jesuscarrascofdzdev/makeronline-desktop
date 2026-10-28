@@ -9,9 +9,10 @@ import com.microsoft.playwright.*;
  */
 public class Codegen {
     public static void main(String[] args) throws Exception {
-        try (AgentLock lock = AgentLock.acquire("Codegen", false);
+        Rutas rutas = Rutas.carpetaActual();
+        try (AgentLock lock = AgentLock.acquire(rutas.getCandado(), "Codegen", false);
              Playwright pw = Playwright.create();
-             BrowserContext ctx = Browsers.openChrome(pw, 0)) {
+             BrowserContext ctx = Browsers.openChrome(pw, rutas.getPerfilChrome(), 0)) {
             Page page = ctx.pages().isEmpty() ? ctx.newPage() : ctx.pages().get(0);
             page.navigate("https://www.makeronline.com/en/upload");
             page.pause();

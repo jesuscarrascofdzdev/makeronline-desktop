@@ -15,7 +15,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
 import androidx.compose.ui.window.rememberWindowState
-import dev.jefe.makeronline.Browsers
+import dev.jefe.makeronline.Rutas
 
 /** Fase 0: ventana de prueba para comprobar que Compose y el módulo core funcionan. */
 fun main() = application {
@@ -35,7 +35,7 @@ fun main() = application {
                     Spacer(Modifier.height(16.dp))
                     Text(Textos.VENTANA_OK)
                     Spacer(Modifier.height(8.dp))
-                    Text(Textos.coreConectado(Browsers.PROFILE_DIR.toString()))
+                    Text(Textos.coreConectado(Rutas.carpetaActual().perfilChrome.toString()))
                 }
             }
         }

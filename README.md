@@ -6,7 +6,7 @@ App de escritorio para subir y descargar modelos 3D de [MakerOnline](https://www
 - La sesión de MakerOnline (perfil de Chrome) **nunca sale de tu ordenador**.
 - Los captchas **no se saltan**: se enseña la ventana para que los resuelva la persona.
 
-> **Estado: fase 0.** El código de la herramienta de terminal ya está dentro del módulo `core`, sin cambios. La app de escritorio todavía es solo una ventana de prueba.
+> **Estado: fase 1 en curso.** El código de la herramienta de terminal está en el módulo `core` y se está preparando para usarlo desde la app (paso 1a hecho: las rutas están en `Rutas`). La app de escritorio todavía es solo una ventana de prueba.
 
 ---
 
@@ -56,7 +56,7 @@ Los programas de terminal se ejecutan desde la raíz del repo. Ahí se crean `ch
 ## Para asistentes de IA
 
 - **Stack:** Gradle 8.14.3 (Kotlin DSL) con varios módulos. Versiones en `gradle/libs.versions.toml`: Kotlin 2.2.20, Compose Multiplatform 1.9.3, Playwright para Java 1.52.0 y Jackson 2.18.2. JDK 21 (toolchain).
-- **`core`:** Java, paquete `dev.jefe.makeronline`. Programas con `main`: `SaveSession`, `Uploader`, `Downloader` y `Codegen`. Usan rutas relativas al directorio de trabajo, que debe ser la raíz del repo.
+- **`core`:** paquete `dev.jefe.makeronline`. El código heredado está en Java (`src/main/java`) y las piezas nuevas en Kotlin (`src/main/kotlin`). Programas con `main`: `SaveSession`, `Uploader`, `Downloader` y `Codegen`. Todas las rutas de datos salen de `Rutas`. Los programas de terminal usan `Rutas.carpetaActual()`, es decir, el directorio de trabajo, que debe ser la raíz del repo.
 - **`desktop`:** Kotlin + Compose for Desktop, paquete `dev.jefe.makeronline.desktop`. Todos los textos de la interfaz están en `Textos.kt`.
 - **Reglas:** textos y comentarios en español. No inventar selectores ni endpoints de MakerOnline. Pausa de 10 a 30 s entre descargas y nunca en paralelo. No saltar captchas.
 - **Compilar:** `gradlew build`. No hay tests todavía.

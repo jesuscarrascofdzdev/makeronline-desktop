@@ -6,7 +6,6 @@ import com.microsoft.playwright.options.AriaRole;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.nio.file.StandardOpenOption;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
@@ -35,28 +34,49 @@ public class Uploader {
 
     private static final String UPLOAD_URL = "https://www.makeronline.com/en/upload";
 
-    private static final Path BASE = Paths.get("subidas");
-    private static final Path PENDIENTES = BASE.resolve("pendientes");
-    private static final Path SUBIDOS = BASE.resolve("subidos");
-    private static final Path ERRORES = BASE.resolve("errores");
-
     private static final DateTimeFormatter STAMP = DateTimeFormatter.ofPattern("yyyy-MM-dd_HHmm");
 
+    /**
+     * Opciones de una ejecución.
+     *
+     * @param revisar  se para justo antes de guardar cada borrador (--revisar)
+     * @param carpetas solo estas carpetas de pendientes/; vacía = todas
+     * @param esperar  si otro programa del agente está en marcha, espera a que termine (--esperar)
+     */
+    public record Opciones(boolean revisar, List<String> carpetas, boolean esperar) {}
+
+    /** Dónde están la sesión de Chrome y las carpetas de subidas. */
+    private final Rutas rutas;
+
+    public Uploader(Rutas rutas) {
+        this.rutas = rutas;
+    }
+
     public static void main(String[] args) throws Exception {
+        Opciones op = leerArgs(args);
+        Rutas rutas = Rutas.carpetaActual();
         // Solo un programa del agente a la vez: comparten chrome-profile/
-        try (AgentLock lock = AgentLock.acquire("Uploader", List.of(args).contains("--esperar"))) {
-            ejecutar(args);
+        try (AgentLock lock = AgentLock.acquire(rutas.getCandado(), "Uploader", op.esperar())) {
+            new Uploader(rutas).ejecutar(op);
         }
     }
 
-    private static void ejecutar(String[] args) throws Exception {
-        boolean revisar = List.of(args).contains("--revisar");
+    private static Opciones leerArgs(String[] args) {
+        List<String> lista = List.of(args);
+        return new Opciones(
+                lista.contains("--revisar"),
+                lista.stream().filter(a -> !a.startsWith("--")).toList(), // nombres de carpeta
+                lista.contains("--esperar"));
+    }
 
-        Files.createDirectories(PENDIENTES);
-        Files.createDirectories(SUBIDOS);
-        Files.createDirectories(ERRORES);
+    /** Valida y sube como borrador los modelos de pendientes/. */
+    public void ejecutar(Opciones op) throws Exception {
+        Path pendientes = rutas.getPendientes();
+        Files.createDirectories(pendientes);
+        Files.createDirectories(rutas.getSubidos());
+        Files.createDirectories(rutas.getErrores());
 
-        if (!Files.isDirectory(Browsers.PROFILE_DIR)) {
+        if (!Files.isDirectory(rutas.getPerfilChrome())) {
             System.err.println("No hay sesión guardada. Ejecuta primero SaveSession.");
             System.exit(1);
         }
@@ -64,21 +84,21 @@ public class Uploader {
         // 1) Validar TODO antes de abrir el navegador
         List<ModelFolder> listos = new ArrayList<>();
         List<Path> carpetas;
-        try (Stream<Path> s = Files.list(PENDIENTES)) {
+        try (Stream<Path> s = Files.list(pendientes)) {
             carpetas = s.filter(Files::isDirectory).sorted().toList();
         }
 
         // Si se pasan nombres de carpeta, solo se procesan esas
-        List<String> nombres = Stream.of(args).filter(a -> !a.startsWith("--")).toList();
+        List<String> nombres = op.carpetas();
         if (!nombres.isEmpty()) {
             for (String n : nombres) {
-                if (!Files.isDirectory(PENDIENTES.resolve(n))) System.out.println("✘ No existe en pendientes: " + n);
+                if (!Files.isDirectory(pendientes.resolve(n))) System.out.println("✘ No existe en pendientes: " + n);
             }
             carpetas = carpetas.stream().filter(d -> nombres.contains(d.getFileName().toString())).toList();
         }
 
         if (carpetas.isEmpty()) {
-            System.out.println("No hay nada en " + PENDIENTES.toAbsolutePath());
+            System.out.println("No hay nada en " + pendientes.toAbsolutePath());
             return;
         }
         for (Path dir : carpetas) {
@@ -91,23 +111,23 @@ public class Uploader {
             }
         }
         if (listos.isEmpty()) {
-            System.out.println("Ningún modelo válido. Revisa subidas/errores/.");
+            System.out.println("Ningún modelo válido. Revisa " + rutas.getErrores() + ".");
             return;
         }
 
         // 2) Subir los válidos
         int ok = 0, ko = 0;
         try (Playwright pw = Playwright.create();
-             BrowserContext ctx = Browsers.openChrome(pw, 150)) {
+             BrowserContext ctx = Browsers.openChrome(pw, rutas.getPerfilChrome(), 150)) {
             ctx.setDefaultTimeout(30_000);
 
             for (ModelFolder m : listos) {
                 System.out.println("\n=== " + m.name() + " ===");
                 Page page = ctx.newPage();
                 try {
-                    subir(page, m, revisar);
+                    subir(page, m, op.revisar());
                     captura(page, m.dir().resolve("resultado.png"));
-                    Path destino = mover(m.dir(), SUBIDOS);
+                    Path destino = mover(m.dir(), rutas.getSubidos());
                     System.out.println("✔ Borrador guardado → " + destino);
                     ok++;
                 } catch (Exception e) {
@@ -325,12 +345,12 @@ public class Uploader {
         }
     }
 
-    private static void moverAErrores(Path dir, String mensaje) {
+    private void moverAErrores(Path dir, String mensaje) {
         try {
             Files.writeString(dir.resolve("error.txt"),
                     LocalDateTime.now().format(STAMP) + "\n" + mensaje + "\n",
                     StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
-            Path destino = mover(dir, ERRORES);
+            Path destino = mover(dir, rutas.getErrores());
             System.out.println("   Movido a " + destino);
         } catch (IOException e) {
             System.out.println("   No se pudo mover a errores/: " + e.getMessage());

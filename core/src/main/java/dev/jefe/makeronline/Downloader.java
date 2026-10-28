@@ -17,7 +17,6 @@ import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.nio.file.StandardOpenOption;
 import java.time.Duration;
 import java.time.LocalDateTime;
@@ -71,21 +70,9 @@ import java.util.regex.Pattern;
 public class Downloader {
 
     /** Se muestra al arrancar: así se sabe qué versión del código se está ejecutando. */
-    private static final String VERSION = "7 (pausa fija 10-30 s + \"@usuario / nombre\")";
+    private static final String VERSION = "8 (fase 1a: rutas en Rutas)";
 
     private static final String WEB = "https://www.makeronline.com";
-    private static final Path DESCARGAS = Paths.get("modelos-descargados");
-    /**
-     * Un id de modelo por línea. Segunda protección además del like: aunque el like
-     * falle o vacíes modelos-descargados/, lo que está aquí no se vuelve a descargar.
-     * Está en la raíz del proyecto (fuera de modelos-descargados/) para que no se
-     * pierda al vaciar esa carpeta. Para volver a descargar un modelo, borra su línea.
-     */
-    private static final Path REGISTRO = Paths.get("descargados.txt");
-    /** Donde estaba antes el registro: si existe, se mueve a la raíz. */
-    private static final Path REGISTRO_ANTIGUO = DESCARGAS.resolve("descargados.txt");
-    private static final Set<Long> REGISTRADOS = new HashSet<>();
-    private static final Path LISTA = Paths.get("usuarios.json");
     private static final int ULTIMOS_POR_DEFECTO = 10;
     private static final ObjectMapper JSON = new ObjectMapper();
     /** Para usuarios.json: admite comentarios // y una coma de más al final. */
@@ -109,11 +96,11 @@ public class Downloader {
     private static final int CODIGO_CAPTCHA = 1003;
 
     /** usuario == null → todos los de usuarios.json; ultimos == 0 → todos sus modelos. */
-    record Opciones(String usuario, int ultimos, boolean simular, int max, int espera,
-                    boolean perfil, Modo modo, boolean esperar) {}
+    public record Opciones(String usuario, int ultimos, boolean simular, int max, int espera,
+                           boolean perfil, Modo modo, boolean esperar) {}
 
     /** Cómo se ve Chrome mientras trabaja. */
-    enum Modo {
+    public enum Modo {
         /** Por defecto: ventana fuera de la pantalla; aparece si hay captcha. */
         APARTADA,
         /** --visible: ventana normal todo el rato. */
@@ -122,8 +109,16 @@ public class Downloader {
         SIN_VENTANA
     }
 
+    /** Dónde están la sesión de Chrome, usuarios.json, descargados.txt y las descargas. */
+    private final Rutas rutas;
+    /** Ids de los modelos apuntados en descargados.txt. */
+    private final Set<Long> registrados = new HashSet<>();
     /** La ventana de Chrome de esta ejecución (ver Ventana). */
-    private static Ventana ventana;
+    private Ventana ventana;
+
+    public Downloader(Rutas rutas) {
+        this.rutas = rutas;
+    }
 
     /** Pausa entre descargas: entre S y S + MARGEN_ESPERA segundos al azar (--espera=S). */
     private static final int ESPERA_POR_DEFECTO = 10;
@@ -226,18 +221,20 @@ public class Downloader {
             ayuda();
             System.exit(1);
         }
+        Rutas rutas = Rutas.carpetaActual();
         // Solo un programa del agente a la vez: comparten chrome-profile/
-        try (AgentLock lock = AgentLock.acquire("Downloader", op.esperar())) {
-            ejecutar(op);
+        try (AgentLock lock = AgentLock.acquire(rutas.getCandado(), "Downloader", op.esperar())) {
+            new Downloader(rutas).ejecutar(op);
         }
     }
 
-    private static void ejecutar(Opciones op) throws Exception {
+    /** Repasa los usuarios y descarga sus modelos nuevos con estas opciones. */
+    public void ejecutar(Opciones op) throws Exception {
         System.out.println("Downloader · versión " + VERSION);
         // Usuario por argumento → solo ese; si no, todos los de usuarios.json
         List<String> entradas = op.usuario() != null ? List.of(op.usuario()) : leerLista();
         if (entradas.isEmpty()) return;
-        if (!Files.isDirectory(Browsers.PROFILE_DIR)) {
+        if (!Files.isDirectory(rutas.getPerfilChrome())) {
             System.err.println("No hay sesión guardada. Ejecuta primero SaveSession.");
             System.exit(1);
         }
@@ -246,7 +243,7 @@ public class Downloader {
         leerRegistro();
 
         try (Playwright pw = Playwright.create();
-             BrowserContext ctx = Browsers.openChrome(pw, op.modo() == Modo.VISIBLE ? 100 : 0,
+             BrowserContext ctx = Browsers.openChrome(pw, rutas.getPerfilChrome(), op.modo() == Modo.VISIBLE ? 100 : 0,
                      op.modo() == Modo.SIN_VENTANA, op.modo() == Modo.APARTADA)) {
             ctx.setDefaultTimeout(30_000);
             Page page = ctx.pages().isEmpty() ? ctx.newPage() : ctx.pages().get(0);
@@ -290,7 +287,7 @@ public class Downloader {
             } else {
                 System.out.printf("%d descargados, %d solo faltaba el like, %d ya tenían like, %d con error.%n",
                         est.descargados, est.soloLike, est.saltados, est.errores);
-                System.out.println("Carpeta: " + DESCARGAS.toAbsolutePath());
+                System.out.println("Carpeta: " + rutas.getDescargas().toAbsolutePath());
                 for (Path p : est.conErrores) {
                     System.out.println("Detalle de errores: " + p.resolve("errores.txt").toAbsolutePath());
                 }
@@ -300,8 +297,8 @@ public class Downloader {
 
     // ================================================================ un usuario
 
-    private static void procesarUsuario(Page page, BrowserContext ctx, Api api, String entrada,
-                                        Opciones op, Estado est) throws Exception {
+    private void procesarUsuario(Page page, BrowserContext ctx, Api api, String entrada,
+                                 Opciones op, Estado est) throws Exception {
         Usuario u = resolverUsuario(page, api, entrada);
         if (u == null) {
             est.errores++;
@@ -325,7 +322,7 @@ public class Downloader {
         if (pendientes.isEmpty()) return;
 
         // modelos-descargados/<usuario>/
-        Path carpetaUsuario = DESCARGAS.resolve(limpio(u.nombre(), 60));
+        Path carpetaUsuario = rutas.getDescargas().resolve(limpio(u.nombre(), 60));
         Files.createDirectories(carpetaUsuario);
 
         int antes = est.descargados;
@@ -374,16 +371,17 @@ public class Downloader {
     }
 
     /** Lee usuarios.json (o lo crea vacío la primera vez). */
-    private static List<String> leerLista() throws IOException {
-        if (!Files.exists(LISTA)) {
-            Files.writeString(LISTA, PLANTILLA_LISTA, StandardCharsets.UTF_8);
-            System.out.println("He creado " + LISTA.toAbsolutePath());
+    private List<String> leerLista() throws IOException {
+        Path lista = rutas.getUsuarios();
+        if (!Files.exists(lista)) {
+            Files.writeString(lista, PLANTILLA_LISTA, StandardCharsets.UTF_8);
+            System.out.println("He creado " + lista.toAbsolutePath());
             System.out.println("Añade ahí los usuarios que quieres repasar y vuelve a ejecutar.");
             return List.of();
         }
         JsonNode raiz;
         try {
-            raiz = JSON_LISTA.readTree(LISTA.toFile());
+            raiz = JSON_LISTA.readTree(lista.toFile());
         } catch (JsonProcessingException e) {
             String donde = e.getLocation() == null ? "" : " (línea " + e.getLocation().getLineNr() + ")";
             System.err.println("✘ usuarios.json no es válido" + donde + ": " + e.getOriginalMessage());
@@ -411,7 +409,7 @@ public class Downloader {
 
     // ================================================================ un modelo
 
-    private static Resultado procesar(Page page, BrowserContext ctx, Modelo m, Path carpetaUsuario, Opciones op)
+    private Resultado procesar(Page page, BrowserContext ctx, Modelo m, Path carpetaUsuario, Opciones op)
             throws IOException {
         Path dir = carpetaUsuario.resolve(limpio(m.titulo(), 60) + "_" + m.id());
 
@@ -431,7 +429,7 @@ public class Downloader {
         // Ya descargado en una ejecución anterior si está en descargados.txt o si existe
         // su info.json (se escribe lo último, así que la descarga se completó)
         String usuario = carpetaUsuario.getFileName().toString();
-        boolean enRegistro = REGISTRADOS.contains(m.id());
+        boolean enRegistro = registrados.contains(m.id());
         boolean yaDescargado = enRegistro || Files.exists(dir.resolve("info.json"));
         if (yaDescargado) {
             System.out.println("↷ Ya estaba descargado" + (enRegistro ? " (descargados.txt)" : " en " + dir)
@@ -463,7 +461,7 @@ public class Downloader {
      * (El botón de esta pestaña es .print-download-button.tailwind; el de la pestaña
      * de perfiles es .print-download-button a secas.)
      */
-    private static void descargarArchivosModelo(Page page, Path dir) {
+    private void descargarArchivosModelo(Page page, Path dir) {
         paso("Archivos del modelo");
         Locator pestana = page.getByText(Pattern.compile("^\\s*Raw Model Files")).first();
         if (pestana.count() > 0) pestana.click();
@@ -508,7 +506,7 @@ public class Downloader {
      * Según el perfil, la descarga empieza directamente o sale la ventana
      * "Download Print Profile Files" con su botón "Download All".
      */
-    private static void descargarPerfil(Page page, Path dir) {
+    private void descargarPerfil(Page page, Path dir) {
         paso("Perfil de impresión");
         Locator pestana = page.getByText(Pattern.compile("^\\s*Print Profile Files")).first();
         if (pestana.count() > 0) pestana.click();
@@ -543,7 +541,7 @@ public class Downloader {
      * Hace el clic y espera a que el navegador empiece la descarga. Vigila a la vez
      * la respuesta de la API por si MakerOnline pide captcha, da error o pide login.
      */
-    private static void esperarDescarga(Page page, Path dir, Runnable clic) {
+    private void esperarDescarga(Page page, Path dir, Runnable clic) {
         AtomicReference<Download> descarga = new AtomicReference<>();
         AtomicReference<JsonNode> fallo = new AtomicReference<>();
         Consumer<Download> alDescargar = descarga::set;
@@ -623,7 +621,7 @@ public class Downloader {
     }
 
     /** Pulsa el corazón del modelo y confirma con la respuesta de la API. */
-    private static void darLike(Page page, Modelo m) {
+    private void darLike(Page page, Modelo m) {
         if (!page.url().contains("/" + m.id() + ".html")) {
             page.navigate(urlModelo(m));
             cerrarCookies(page, 0);
@@ -827,25 +825,27 @@ public class Downloader {
     }
 
     /** Carga descargados.txt (id ⇥ usuario ⇥ título ⇥ fecha). */
-    private static void leerRegistro() throws IOException {
-        // Antes vivía dentro de modelos-descargados/: se pasa a la raíz para que no se pierda al vaciarla
-        if (Files.exists(REGISTRO_ANTIGUO)) {
-            Files.write(REGISTRO, Files.readAllBytes(REGISTRO_ANTIGUO),
+    private void leerRegistro() throws IOException {
+        Path registro = rutas.getRegistro();
+        Path antiguo = rutas.getRegistroAntiguo();
+        // Antes vivía dentro de modelos-descargados/: se pasa fuera para que no se pierda al vaciarla
+        if (Files.exists(antiguo)) {
+            Files.write(registro, Files.readAllBytes(antiguo),
                     StandardOpenOption.CREATE, StandardOpenOption.APPEND);
-            Files.delete(REGISTRO_ANTIGUO);
-            System.out.println("descargados.txt pasa a estar en " + REGISTRO.toAbsolutePath());
+            Files.delete(antiguo);
+            System.out.println("descargados.txt pasa a estar en " + registro.toAbsolutePath());
         }
-        if (!Files.exists(REGISTRO)) return;
-        for (String linea : Files.readAllLines(REGISTRO, StandardCharsets.UTF_8)) {
+        if (!Files.exists(registro)) return;
+        for (String linea : Files.readAllLines(registro, StandardCharsets.UTF_8)) {
             String id = linea.split("\t", 2)[0].trim();
-            if (id.matches("\\d+")) REGISTRADOS.add(Long.parseLong(id));
+            if (id.matches("\\d+")) registrados.add(Long.parseLong(id));
         }
     }
 
-    private static void registrar(Modelo m, String usuario) {
-        if (!REGISTRADOS.add(m.id())) return;
+    private void registrar(Modelo m, String usuario) {
+        if (!registrados.add(m.id())) return;
         try {
-            Files.writeString(REGISTRO,
+            Files.writeString(rutas.getRegistro(),
                     m.id() + "\t" + usuario + "\t" + m.titulo().replaceAll("[\\t\\r\\n]+", " ")
                             + "\t" + LocalDateTime.now().format(STAMP) + "\n",
                     StandardCharsets.UTF_8, StandardOpenOption.CREATE, StandardOpenOption.APPEND);

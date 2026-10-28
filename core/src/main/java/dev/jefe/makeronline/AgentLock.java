@@ -6,7 +6,6 @@ import java.nio.channels.FileChannel;
 import java.nio.channels.FileLock;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.nio.file.StandardOpenOption;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
@@ -21,8 +20,6 @@ import java.time.format.DateTimeFormatter;
  * o lo cierras a la fuerza, se libera solo: nunca se queda "pillado".
  */
 public final class AgentLock implements AutoCloseable {
-
-    private static final Path FILE = Paths.get(".agente.lock");
 
     /**
      * Se bloquea un byte muy por detrás del texto. En Windows un bloqueo impide
@@ -44,11 +41,13 @@ public final class AgentLock implements AutoCloseable {
     /**
      * Coge el candado o termina el programa si otro lo tiene.
      *
+     * @param archivo  el archivo del candado (Rutas.getCandado())
      * @param programa nombre que verán los demás ("Uploader", "Downloader"...)
      * @param esperar  true para esperar a que quede libre en vez de salir
      */
-    public static AgentLock acquire(String programa, boolean esperar) throws IOException, InterruptedException {
-        FileChannel ch = FileChannel.open(FILE,
+    public static AgentLock acquire(Path archivo, String programa, boolean esperar)
+            throws IOException, InterruptedException {
+        FileChannel ch = FileChannel.open(archivo,
                 StandardOpenOption.CREATE, StandardOpenOption.READ, StandardOpenOption.WRITE);
         boolean avisado = false;
         while (true) {

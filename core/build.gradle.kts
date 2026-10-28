@@ -1,13 +1,14 @@
 // core: la lógica de MakerOnline (sesión, subir, descargar, likes, registro, candado).
-// Fase 0: es el código de makeronline-agent tal cual, en Java.
+// El código heredado de makeronline-agent está en Java (src/main/java) y las piezas
+// nuevas en Kotlin (src/main/kotlin). Java y Kotlin se usan entre sí sin problema.
 plugins {
     `java-library`
+    alias(libs.plugins.kotlin.jvm)
 }
 
-java {
-    toolchain {
-        languageVersion = JavaLanguageVersion.of(21)
-    }
+kotlin {
+    // Java 21 para Kotlin y para Java
+    jvmToolchain(21)
 }
 
 dependencies {
