@@ -70,7 +70,7 @@ import java.util.regex.Pattern;
 public class Downloader {
 
     /** Se muestra al arrancar: así se sabe qué versión del código se está ejecutando. */
-    private static final String VERSION = "8 (fase 1a: rutas en Rutas)";
+    private static final String VERSION = "9 (fase 1b: eventos de progreso)";
 
     private static final String WEB = "https://www.makeronline.com";
     private static final int ULTIMOS_POR_DEFECTO = 10;
@@ -109,15 +109,31 @@ public class Downloader {
         SIN_VENTANA
     }
 
+    /**
+     * Cómo ha ido una ejecución.
+     *
+     * @param descargados        modelos descargados (y con like)
+     * @param soloLike           ya estaban descargados y solo faltaba el like
+     * @param yaTenianLike       se han saltado porque ya tenían like
+     * @param errores            usuarios o modelos que han fallado
+     * @param carpetasConErrores carpetas de usuario con errores.txt y capturas error_<id>.png
+     * @param simulado           true con --simular (no se ha descargado nada)
+     */
+    public record Resumen(int descargados, int soloLike, int yaTenianLike, int errores,
+                          List<Path> carpetasConErrores, boolean simulado) {}
+
     /** Dónde están la sesión de Chrome, usuarios.json, descargados.txt y las descargas. */
     private final Rutas rutas;
+    /** A quién se le cuenta lo que va pasando (terminal o app). */
+    private final Progreso progreso;
     /** Ids de los modelos apuntados en descargados.txt. */
     private final Set<Long> registrados = new HashSet<>();
     /** La ventana de Chrome de esta ejecución (ver Ventana). */
     private Ventana ventana;
 
-    public Downloader(Rutas rutas) {
+    public Downloader(Rutas rutas, Progreso progreso) {
         this.rutas = rutas;
+        this.progreso = progreso;
     }
 
     /** Pausa entre descargas: entre S y S + MARGEN_ESPERA segundos al azar (--espera=S). */
@@ -159,12 +175,14 @@ public class Downloader {
 
         private final Modo modo;
         private final Page page;
+        private final Progreso progreso;
         private CDPSession cdp;
         private int windowId = -1;
 
-        Ventana(Modo modo, BrowserContext ctx, Page page) {
+        Ventana(Modo modo, BrowserContext ctx, Page page, Progreso progreso) {
             this.modo = modo;
             this.page = page;
+            this.progreso = progreso;
             if (modo != Modo.APARTADA) return;
             try {
                 cdp = ctx.newCDPSession(page);
@@ -172,7 +190,7 @@ public class Downloader {
                 apartar(); // por si Chrome no hizo caso a --window-position
             } catch (Exception e) {
                 cdp = null;
-                System.out.println("   (no he podido apartar la ventana de Chrome: " + primeraLinea(e) + ")");
+                progreso.nota("no he podido apartar la ventana de Chrome: " + primeraLinea(e));
             }
         }
 
@@ -180,8 +198,13 @@ public class Downloader {
         void pedirCaptcha(Page p, String para) {
             if (modo == Modo.SIN_VENTANA) throw new CaptchaException("MakerOnline pide captcha para " + para);
             mostrar();
-            System.out.println("   ⚠ MakerOnline pide captcha para " + para
-                    + ". Resuélvelo en la ventana de Chrome (tienes " + TIEMPO_CAPTCHA_MS / 60_000 + " minutos)");
+            progreso.captcha(para, TIEMPO_CAPTCHA_MS / 60_000);
+        }
+
+        /** Captcha resuelto (o tiempo agotado): la ventana vuelve fuera de la pantalla. */
+        void finCaptcha() {
+            apartar();
+            progreso.captchaTerminado();
         }
 
         void mostrar() {
@@ -203,7 +226,7 @@ public class Downloader {
                 posicion.addProperty("top", y);
                 cdp.send("Browser.setWindowBounds", argumentos(posicion));
             } catch (Exception e) {
-                System.out.println("   (no he podido mover la ventana de Chrome: " + primeraLinea(e) + ")");
+                progreso.nota("no he podido mover la ventana de Chrome: " + primeraLinea(e));
             }
         }
 
@@ -222,21 +245,28 @@ public class Downloader {
             System.exit(1);
         }
         Rutas rutas = Rutas.carpetaActual();
+        Progreso progreso = new ProgresoConsola();
         // Solo un programa del agente a la vez: comparten chrome-profile/
-        try (AgentLock lock = AgentLock.acquire(rutas.getCandado(), "Downloader", op.esperar())) {
-            new Downloader(rutas).ejecutar(op);
+        try (AgentLock lock = AgentLock.acquire(rutas.getCandado(), "Downloader", op.esperar(), progreso)) {
+            new Downloader(rutas, progreso).ejecutar(op);
+        } catch (AgenteException e) {
+            progreso.error(e.getMessage());
+            System.exit(e.getCodigoSalida());
         }
     }
 
-    /** Repasa los usuarios y descarga sus modelos nuevos con estas opciones. */
-    public void ejecutar(Opciones op) throws Exception {
-        System.out.println("Downloader · versión " + VERSION);
+    /**
+     * Repasa los usuarios y descarga sus modelos nuevos con estas opciones.
+     *
+     * @throws AgenteException si no hay sesión, ha caducado o la web no carga
+     */
+    public Resumen ejecutar(Opciones op) throws Exception {
+        progreso.info("Downloader · versión " + VERSION);
         // Usuario por argumento → solo ese; si no, todos los de usuarios.json
         List<String> entradas = op.usuario() != null ? List.of(op.usuario()) : leerLista();
-        if (entradas.isEmpty()) return;
+        if (entradas.isEmpty()) return new Resumen(0, 0, 0, 0, List.of(), op.simular());
         if (!Files.isDirectory(rutas.getPerfilChrome())) {
-            System.err.println("No hay sesión guardada. Ejecuta primero SaveSession.");
-            System.exit(1);
+            throw new AgenteException("No hay sesión guardada. Ejecuta primero SaveSession.");
         }
         long inicio = System.currentTimeMillis();
         Estado est = new Estado(op.max());
@@ -247,52 +277,52 @@ public class Downloader {
                      op.modo() == Modo.SIN_VENTANA, op.modo() == Modo.APARTADA)) {
             ctx.setDefaultTimeout(30_000);
             Page page = ctx.pages().isEmpty() ? ctx.newPage() : ctx.pages().get(0);
-            ventana = new Ventana(op.modo(), ctx, page);
+            ventana = new Ventana(op.modo(), ctx, page, progreso);
 
             // --- Sesión ---
-            paso("Comprobando la sesión" + switch (op.modo()) {
+            progreso.paso("Comprobando la sesión" + switch (op.modo()) {
                 case APARTADA -> " (Chrome fuera de la pantalla; aparecerá solo si hay captcha)";
                 case SIN_VENTANA -> " (sin ventana)";
                 case VISIBLE -> "";
             });
             page.navigate(WEB + "/en/");
             if (!Boolean.TRUE.equals(page.evaluate("() => !!window.__NUXT__"))) {
-                System.err.println("✘ La web de MakerOnline no ha cargado bien.");
-                return;
+                throw new AgenteException("La web de MakerOnline no ha cargado bien.");
             }
             cerrarCookies(page, 3_000);
             String token = token(ctx);
             if (token == null) {
-                System.err.println("✘ No hay sesión iniciada en MakerOnline (o ha caducado). Ejecuta SaveSession.");
-                return;
+                throw new AgenteException("No hay sesión iniciada en MakerOnline (o ha caducado). Ejecuta SaveSession.");
             }
             Api api = new Api(ctx.request(), token);
 
             // --- Repaso de todos los usuarios ---
             for (int k = 0; k < entradas.size() && !est.parar; k++) {
                 String entrada = entradas.get(k);
-                System.out.printf("%n######## [%d/%d] %s ########%n", k + 1, entradas.size(), entrada);
+                progreso.usuario(k + 1, entradas.size(), entrada);
                 try {
                     procesarUsuario(page, ctx, api, entrada, op, est);
                 } catch (Exception e) {
                     est.errores++;
-                    System.out.println("✘ No se ha podido revisar " + entrada + ": " + primeraLinea(e));
+                    progreso.error("No se ha podido revisar " + entrada + ": " + primeraLinea(e));
                 }
             }
 
             long min = Duration.ofMillis(System.currentTimeMillis() - inicio).toMinutes();
-            System.out.printf("%n======== Terminado en %d min ========%n", min);
+            progreso.info(String.format("%n======== Terminado en %d min ========", min));
             if (op.simular()) {
-                System.out.println("(--simular: no se ha descargado nada ni se ha dado ningún like)");
+                progreso.info("(--simular: no se ha descargado nada ni se ha dado ningún like)");
             } else {
-                System.out.printf("%d descargados, %d solo faltaba el like, %d ya tenían like, %d con error.%n",
-                        est.descargados, est.soloLike, est.saltados, est.errores);
-                System.out.println("Carpeta: " + rutas.getDescargas().toAbsolutePath());
+                progreso.info(String.format("%d descargados, %d solo faltaba el like, %d ya tenían like, %d con error.",
+                        est.descargados, est.soloLike, est.saltados, est.errores));
+                progreso.info("Carpeta: " + rutas.getDescargas().toAbsolutePath());
                 for (Path p : est.conErrores) {
-                    System.out.println("Detalle de errores: " + p.resolve("errores.txt").toAbsolutePath());
+                    progreso.info("Detalle de errores: " + p.resolve("errores.txt").toAbsolutePath());
                 }
             }
         }
+        return new Resumen(est.descargados, est.soloLike, est.saltados, est.errores,
+                List.copyOf(est.conErrores), op.simular());
     }
 
     // ================================================================ un usuario
@@ -304,18 +334,18 @@ public class Downloader {
             est.errores++;
             return;
         }
-        System.out.println("Usuario: " + u.nombre() + "  " + u.handle()
+        progreso.info("Usuario: " + u.nombre() + "  " + u.handle()
                 + "\n         " + WEB + "/en/user/personalInfo/" + u.id() + ".html");
 
         List<Modelo> revisados = listarModelos(api, u.id(), op.ultimos());
         List<Modelo> pendientes = revisados.stream().filter(m -> !m.liked()).toList();
-        System.out.printf("%s %d modelos: %d ya con like, %d por descargar.%n",
+        progreso.info(String.format("%s %d modelos: %d ya con like, %d por descargar.",
                 op.ultimos() > 0 ? "Últimos" : "Todos sus", revisados.size(),
-                revisados.size() - pendientes.size(), pendientes.size());
+                revisados.size() - pendientes.size(), pendientes.size()));
 
         if (op.simular()) {
             for (Modelo m : pendientes) {
-                System.out.println("  · " + m.titulo() + (m.premium() ? "  [premium]" : "") + "\n    " + urlModelo(m));
+                progreso.info("  · " + m.titulo() + (m.premium() ? "  [premium]" : "") + "\n    " + urlModelo(m));
             }
             return;
         }
@@ -328,7 +358,7 @@ public class Downloader {
         int antes = est.descargados;
         for (int i = 0; i < pendientes.size(); i++) {
             if (est.restantes <= 0) {
-                System.out.println("Alcanzado el máximo de descargas (--max): paro aquí.");
+                progreso.info("Alcanzado el máximo de descargas (--max): paro aquí.");
                 est.parar = true;
                 break;
             }
@@ -337,7 +367,7 @@ public class Downloader {
                 est.pausar = false;
             }
             Modelo m = pendientes.get(i);
-            System.out.printf("%n=== [%d/%d] %s ===%n", i + 1, pendientes.size(), m.titulo());
+            progreso.modelo(i + 1, pendientes.size(), m.titulo());
             long inicio = System.currentTimeMillis();
             try {
                 switch (procesar(page, ctx, m, carpetaUsuario, op)) {
@@ -349,9 +379,9 @@ public class Downloader {
                 est.errores++;
                 est.parar = true;
                 est.conErrores.add(carpetaUsuario);
-                System.out.println("✘ " + e.getMessage());
-                System.out.println("  Paro aquí (también con el resto de usuarios) para no forzar nada.");
-                System.out.println("  Vuelve a intentarlo más tarde" + (op.modo() == Modo.SIN_VENTANA
+                progreso.error(e.getMessage()
+                        + "\n  Paro aquí (también con el resto de usuarios) para no forzar nada."
+                        + "\n  Vuelve a intentarlo más tarde" + (op.modo() == Modo.SIN_VENTANA
                         ? ", o lánzalo sin --sin-ventana para que aparezca Chrome y lo resuelvas tú."
                         : " y resuelve el captcha cuando aparezca la ventana de Chrome."));
                 registrarError(carpetaUsuario, m, e.getMessage());
@@ -362,12 +392,12 @@ public class Downloader {
                 est.inicioUltimo = inicio;
                 est.conErrores.add(carpetaUsuario);
                 String msg = primeraLinea(e);
-                System.out.println("✘ Error: " + msg);
+                progreso.error("Error: " + msg);
                 registrarError(carpetaUsuario, m, msg);
                 captura(page, carpetaUsuario.resolve("error_" + m.id() + ".png"));
             }
         }
-        System.out.println("→ " + u.nombre() + ": " + (est.descargados - antes) + " descargados en " + carpetaUsuario);
+        progreso.paso(u.nombre() + ": " + (est.descargados - antes) + " descargados en " + carpetaUsuario);
     }
 
     /** Lee usuarios.json (o lo crea vacío la primera vez). */
@@ -375,8 +405,8 @@ public class Downloader {
         Path lista = rutas.getUsuarios();
         if (!Files.exists(lista)) {
             Files.writeString(lista, PLANTILLA_LISTA, StandardCharsets.UTF_8);
-            System.out.println("He creado " + lista.toAbsolutePath());
-            System.out.println("Añade ahí los usuarios que quieres repasar y vuelve a ejecutar.");
+            progreso.info("He creado " + lista.toAbsolutePath());
+            progreso.info("Añade ahí los usuarios que quieres repasar y vuelve a ejecutar.");
             return List.of();
         }
         JsonNode raiz;
@@ -384,12 +414,12 @@ public class Downloader {
             raiz = JSON_LISTA.readTree(lista.toFile());
         } catch (JsonProcessingException e) {
             String donde = e.getLocation() == null ? "" : " (línea " + e.getLocation().getLineNr() + ")";
-            System.err.println("✘ usuarios.json no es válido" + donde + ": " + e.getOriginalMessage());
-            System.err.println("  Tiene que ser una lista: [\"usuario1\", \"usuario2\"]");
+            progreso.error("usuarios.json no es válido" + donde + ": " + e.getOriginalMessage()
+                    + "\n  Tiene que ser una lista: [\"usuario1\", \"usuario2\"]");
             return List.of();
         }
         if (raiz == null || !raiz.isArray()) {
-            System.err.println("✘ usuarios.json tiene que ser una lista: [\"usuario1\", \"usuario2\"]");
+            progreso.error("usuarios.json tiene que ser una lista: [\"usuario1\", \"usuario2\"]");
             return List.of();
         }
         List<String> out = new ArrayList<>();
@@ -398,8 +428,8 @@ public class Downloader {
             String s = n.asText("").trim();
             if (!s.isEmpty() && vistos.add(s.toLowerCase())) out.add(s);
         }
-        if (out.isEmpty()) System.out.println("usuarios.json está vacío: añade algún usuario y vuelve a ejecutar.");
-        else System.out.println("Usuarios en la lista: " + out.size());
+        if (out.isEmpty()) progreso.info("usuarios.json está vacío: añade algún usuario y vuelve a ejecutar.");
+        else progreso.info("Usuarios en la lista: " + out.size());
         return out;
     }
 
@@ -413,7 +443,7 @@ public class Downloader {
             throws IOException {
         Path dir = carpetaUsuario.resolve(limpio(m.titulo(), 60) + "_" + m.id());
 
-        paso("Abriendo " + urlModelo(m));
+        progreso.paso("Abriendo " + urlModelo(m));
         page.navigate(urlModelo(m));
         cerrarCookies(page, 0);
         JsonNode det = detalle(page);
@@ -422,7 +452,7 @@ public class Downloader {
         }
         // Doble comprobación: la lista dice que no tiene like, pero lo confirmamos en su página
         if (det.path("is_like").asInt(0) == 1) {
-            System.out.println("↷ Ya tenía like, lo salto");
+            progreso.saltado("Ya tenía like, lo salto");
             return Resultado.YA_TENIA_LIKE;
         }
 
@@ -432,7 +462,7 @@ public class Downloader {
         boolean enRegistro = registrados.contains(m.id());
         boolean yaDescargado = enRegistro || Files.exists(dir.resolve("info.json"));
         if (yaDescargado) {
-            System.out.println("↷ Ya estaba descargado" + (enRegistro ? " (descargados.txt)" : " en " + dir)
+            progreso.saltado("Ya estaba descargado" + (enRegistro ? " (descargados.txt)" : " en " + dir)
                     + ", solo falta el like");
             registrar(m, usuario); // los bajados antes de existir el registro se anotan ahora
         } else {
@@ -447,7 +477,7 @@ public class Downloader {
             guardarPortada(ctx, det, dir);
             guardarInfo(page, det, m, dir);
             registrar(m, usuario);
-            System.out.println("✔ Descargado en " + dir);
+            progreso.correcto("Descargado en " + dir);
         }
 
         darLike(page, m);
@@ -462,7 +492,7 @@ public class Downloader {
      * de perfiles es .print-download-button a secas.)
      */
     private void descargarArchivosModelo(Page page, Path dir) {
-        paso("Archivos del modelo");
+        progreso.paso("Archivos del modelo");
         Locator pestana = page.getByText(Pattern.compile("^\\s*Raw Model Files")).first();
         if (pestana.count() > 0) pestana.click();
 
@@ -507,7 +537,7 @@ public class Downloader {
      * "Download Print Profile Files" con su botón "Download All".
      */
     private void descargarPerfil(Page page, Path dir) {
-        paso("Perfil de impresión");
+        progreso.paso("Perfil de impresión");
         Locator pestana = page.getByText(Pattern.compile("^\\s*Print Profile Files")).first();
         if (pestana.count() > 0) pestana.click();
 
@@ -603,12 +633,12 @@ public class Downloader {
             page.offDownload(alDescargar);
             page.offResponse(alResponder);
             ctx.offPage(alAbrirPestana);
-            if (captcha) ventana.apartar(); // resuelto (o no): la ventana vuelve fuera de la pantalla
+            if (captcha) ventana.finCaptcha(); // resuelto (o no): la ventana vuelve fuera de la pantalla
         }
 
         Download d = descarga.get();
         Path destino = dir.resolve(limpioArchivo(d.suggestedFilename()));
-        paso("Guardando " + destino.getFileName());
+        progreso.paso("Guardando " + destino.getFileName());
         try {
             d.saveAs(destino); // espera a que termine de bajar
             String error = d.failure();
@@ -636,11 +666,11 @@ public class Downloader {
             throw new IllegalStateException("Descargado, pero no encuentro el botón de me gusta");
         }
         if (icono(corazon).contains("ic_like_click")) {
-            System.out.println("♥ Ya tenía like");
+            progreso.like("Ya tenía like");
             return;
         }
 
-        paso("Dando like");
+        progreso.paso("Dando like");
         Response r;
         try {
             r = page.waitForResponse(resp -> resp.url().contains("/api/user/like/like"),
@@ -670,12 +700,12 @@ public class Downloader {
                     page.waitForTimeout(1000);
                 }
             } finally {
-                ventana.apartar();
+                ventana.finCaptcha();
             }
         } else if (code != 0) {
             throw new IllegalStateException("Descargado, pero el like ha fallado: " + mensaje);
         }
-        System.out.println("♥ Like dado");
+        progreso.like("Like dado");
     }
 
     // ================================================================ datos
@@ -687,7 +717,7 @@ public class Downloader {
         return s == null ? null : JSON.readTree((String) s);
     }
 
-    private static Usuario resolverUsuario(Page page, Api api, String entrada) throws JsonProcessingException {
+    private Usuario resolverUsuario(Page page, Api api, String entrada) throws JsonProcessingException {
         // URL del perfil o id directamente: el nombre se saca de la página del perfil
         Matcher mm = UUID_RE.matcher(entrada);
         if (mm.find()) {
@@ -696,7 +726,7 @@ public class Downloader {
             Object s = page.evaluate("() => { const d = window.__NUXT__ && window.__NUXT__.data && window.__NUXT__.data[0];"
                     + " return d && d.userInfo && d.userInfo.id ? JSON.stringify(d.userInfo) : null; }");
             if (s == null) {
-                System.err.println("✘ No encuentro ningún usuario con id " + id);
+                progreso.error("No encuentro ningún usuario con id " + id);
                 return null;
             }
             return usuario(JSON.readTree((String) s));
@@ -718,7 +748,7 @@ public class Downloader {
             soloPorHandle = true;
             busquedas.add(nombre);
         } else if (partes.length > 1) {
-            System.err.println("✘ No entiendo '" + entrada + "'. Usa \"@usuario_1234567 / NombreVisible\", el @, el nombre o la URL.");
+            progreso.error("No entiendo '" + entrada + "'. Usa \"@usuario_1234567 / NombreVisible\", el @, el nombre o la URL.");
             return null;
         } else {
             // "NombreVisible", "@Nombre" o "@NombreUsuario_1234567"
@@ -742,22 +772,29 @@ public class Downloader {
             if (porHandle.size() == 1) return usuario(porHandle.get(0));
             if (porNombre.size() == 1) return usuario(porNombre.get(0));
             if (porNombre.size() > 1) {
-                System.err.println("✘ Hay varios usuarios llamados '" + clave + "'. Usa su @ completo o la URL del perfil:");
-                porNombre.forEach(n -> System.err.println("   " + n.path("show_user_name").asText()
-                        + " / " + n.path("display_name").asText() + "  (" + n.path("designs").asInt() + " modelos)"));
+                StringBuilder msg = new StringBuilder("Hay varios usuarios llamados '" + clave
+                        + "'. Usa su @ completo o la URL del perfil:");
+                porNombre.forEach(n -> msg.append("\n   ").append(describir(n)));
+                progreso.error(msg.toString());
                 return null;
             }
         }
-        System.err.println("✘ No encuentro al usuario '" + entrada + "'.");
-        System.err.println(soloPorHandle
+        StringBuilder msg = new StringBuilder("No encuentro al usuario '" + entrada + "'.\n");
+        msg.append(soloPorHandle
                 ? "  Revisa que el nombre visible esté bien escrito, o pon la URL de su perfil."
                 : "  Si su nombre visible es distinto del @, escribe \"@usuario_1234567 / NombreVisible\" o pon la URL de su perfil.");
         if (!vistos.isEmpty()) {
-            System.err.println("  Parecidos:");
-            vistos.stream().limit(5).forEach(n -> System.err.println("   " + n.path("show_user_name").asText()
-                    + " / " + n.path("display_name").asText() + "  (" + n.path("designs").asInt() + " modelos)"));
+            msg.append("\n  Parecidos:");
+            vistos.stream().limit(5).forEach(n -> msg.append("\n   ").append(describir(n)));
         }
+        progreso.error(msg.toString());
         return null;
+    }
+
+    /** "@usuario_1234567 / NombreVisible  (12 modelos)" de un resultado del buscador. */
+    private static String describir(JsonNode n) {
+        return n.path("show_user_name").asText() + " / " + n.path("display_name").asText()
+                + "  (" + n.path("designs").asInt() + " modelos)";
     }
 
     private static Usuario usuario(JsonNode n) {
@@ -772,7 +809,7 @@ public class Downloader {
      *
      * @param limite cuántos de los últimos; 0 = todos (recorre todas las páginas)
      */
-    private static List<Modelo> listarModelos(Api api, String userId, int limite) throws InterruptedException {
+    private List<Modelo> listarModelos(Api api, String userId, int limite) throws InterruptedException {
         List<Modelo> out = new ArrayList<>();
         for (int pagina = 1; ; pagina++) {
             JsonNode data = api.get("/api/user/personal/index?page_size=12&user_id=" + userId + "&page=" + pagina);
@@ -783,15 +820,14 @@ public class Downloader {
             }
             if (limite > 0 && out.size() >= limite) break; // con los 10 últimos basta una página
             int ultima = Math.max(1, data.path("page").path("last_page").asInt(1));
-            if (limite <= 0) System.out.print("\r→ Leyendo la lista de modelos: página " + pagina + "/" + ultima + "   ");
+            if (limite <= 0) progreso.leyendoPaginas(pagina, ultima);
             if (pagina >= ultima || lista.isEmpty()) break;
             Thread.sleep(800 + ThreadLocalRandom.current().nextInt(700)); // sin prisas
         }
-        if (limite <= 0) System.out.println();
         return limite > 0 && out.size() > limite ? new ArrayList<>(out.subList(0, limite)) : out;
     }
 
-    private static void guardarPortada(BrowserContext ctx, JsonNode det, Path dir) {
+    private void guardarPortada(BrowserContext ctx, JsonNode det, Path dir) {
         String url = null;
         for (JsonNode im : det.path("images")) {
             if (im.path("is_main").asInt(0) == 1) { url = im.path("url").asText(null); break; }
@@ -802,7 +838,7 @@ public class Downloader {
             APIResponse r = ctx.request().get(url);
             if (r.ok()) Files.write(dir.resolve("portada" + extension(url)), r.body());
         } catch (Exception e) {
-            System.out.println("   (no se ha podido guardar la portada: " + e.getMessage() + ")");
+            progreso.nota("no se ha podido guardar la portada: " + e.getMessage());
         }
     }
 
@@ -833,7 +869,7 @@ public class Downloader {
             Files.write(registro, Files.readAllBytes(antiguo),
                     StandardOpenOption.CREATE, StandardOpenOption.APPEND);
             Files.delete(antiguo);
-            System.out.println("descargados.txt pasa a estar en " + registro.toAbsolutePath());
+            progreso.info("descargados.txt pasa a estar en " + registro.toAbsolutePath());
         }
         if (!Files.exists(registro)) return;
         for (String linea : Files.readAllLines(registro, StandardCharsets.UTF_8)) {
@@ -850,7 +886,7 @@ public class Downloader {
                             + "\t" + LocalDateTime.now().format(STAMP) + "\n",
                     StandardCharsets.UTF_8, StandardOpenOption.CREATE, StandardOpenOption.APPEND);
         } catch (IOException e) {
-            System.out.println("   (no se ha podido anotar en descargados.txt: " + e.getMessage() + ")");
+            progreso.nota("no se ha podido anotar en descargados.txt: " + e.getMessage());
         }
     }
 
@@ -944,12 +980,12 @@ public class Downloader {
      * igual aunque salgan captchas. Se cuenta desde que EMPEZÓ el modelo anterior, así
      * que lo que tardó en bajar ya cuenta como parte de la pausa. --espera=0 la quita.
      */
-    private static void pausa(Page page, int minimo, Estado est) {
+    private void pausa(Page page, int minimo, Estado est) {
         if (minimo <= 0) return;
         double objetivoS = minimo + ThreadLocalRandom.current().nextDouble(MARGEN_ESPERA);
         long restanteMs = Math.round(objetivoS * 1000) - (System.currentTimeMillis() - est.inicioUltimo);
         if (restanteMs <= 0) return;
-        System.out.printf("… esperando %d s antes del siguiente%n", Math.round(restanteMs / 1000.0));
+        progreso.pausa(Math.round(restanteMs / 1000.0));
         page.waitForTimeout(restanteMs);
     }
 
@@ -979,10 +1015,6 @@ public class Downloader {
         t = t.replace("&nbsp;", " ").replace("&lt;", "<").replace("&gt;", ">")
                 .replace("&quot;", "\"").replace("&#39;", "'").replace("&amp;", "&");
         return t.replaceAll("\n{3,}", "\n\n").trim();
-    }
-
-    private static void paso(String texto) {
-        System.out.println("→ " + texto);
     }
 
     private static Opciones leerArgs(String[] args) {

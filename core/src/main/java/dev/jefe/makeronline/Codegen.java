@@ -10,12 +10,16 @@ import com.microsoft.playwright.*;
 public class Codegen {
     public static void main(String[] args) throws Exception {
         Rutas rutas = Rutas.carpetaActual();
-        try (AgentLock lock = AgentLock.acquire(rutas.getCandado(), "Codegen", false);
+        Progreso progreso = new ProgresoConsola();
+        try (AgentLock lock = AgentLock.acquire(rutas.getCandado(), "Codegen", false, progreso);
              Playwright pw = Playwright.create();
              BrowserContext ctx = Browsers.openChrome(pw, rutas.getPerfilChrome(), 0)) {
             Page page = ctx.pages().isEmpty() ? ctx.newPage() : ctx.pages().get(0);
             page.navigate("https://www.makeronline.com/en/upload");
             page.pause();
+        } catch (AgenteException e) {
+            progreso.error(e.getMessage());
+            System.exit(e.getCodigoSalida());
         }
     }
 }

@@ -39,13 +39,14 @@ public final class AgentLock implements AutoCloseable {
     }
 
     /**
-     * Coge el candado o termina el programa si otro lo tiene.
+     * Coge el candado.
      *
      * @param archivo  el archivo del candado (Rutas.getCandado())
      * @param programa nombre que verán los demás ("Uploader", "Downloader"...)
-     * @param esperar  true para esperar a que quede libre en vez de salir
+     * @param esperar  true para esperar a que quede libre en vez de fallar
+     * @throws AgenteException (código 2) si otro programa lo tiene y no se espera
      */
-    public static AgentLock acquire(Path archivo, String programa, boolean esperar)
+    public static AgentLock acquire(Path archivo, String programa, boolean esperar, Progreso progreso)
             throws IOException, InterruptedException {
         FileChannel ch = FileChannel.open(archivo,
                 StandardOpenOption.CREATE, StandardOpenOption.READ, StandardOpenOption.WRITE);
@@ -60,12 +61,11 @@ public final class AgentLock implements AutoCloseable {
             String quien = leerInfo(ch);
             if (!esperar) {
                 ch.close();
-                System.err.println("✘ Ya hay otro programa del agente en marcha: " + quien);
-                System.err.println("  Espera a que termine o lánzalo con --esperar para que arranque cuando quede libre.");
-                System.exit(2);
+                throw new AgenteException("Ya hay otro programa del agente en marcha: " + quien
+                        + "\n  Espera a que termine o lánzalo con --esperar para que arranque cuando quede libre.", 2);
             }
             if (!avisado) {
-                System.out.println("⏳ Esperando a que termine " + quien + "...");
+                progreso.info("⏳ Esperando a que termine " + quien + "...");
                 avisado = true;
             }
             Thread.sleep(10_000);
