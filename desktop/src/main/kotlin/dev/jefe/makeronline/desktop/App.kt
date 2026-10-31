@@ -18,23 +18,31 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.Alignment
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import java.awt.Desktop
+import java.net.URI
+import java.nio.file.Files
+import java.nio.file.Path
 
 /** La ventana: menú a la izquierda y la pantalla elegida a la derecha. */
 @Composable
 fun App(app: EstadoApp) {
+    // Las tareas con Chrome se lanzan aquí y no dentro de cada pantalla: así siguen en marcha
+    // aunque cambies de pantalla (lo de dentro de una pantalla se cancela al salir de ella).
+    val alcance = rememberCoroutineScope()
     MaterialTheme {
         Surface(Modifier.fillMaxSize()) {
             Row(Modifier.fillMaxSize()) {
-                Menu(actual = app.pantalla, alElegir = { app.pantalla = it })
+                Menu(actual = app.pantalla, tarea = app.ocupacion.tarea, alElegir = { app.pantalla = it })
                 // línea de separación
                 Box(Modifier.width(1.dp).fillMaxHeight().background(MaterialTheme.colorScheme.outlineVariant))
                 Box(Modifier.weight(1f).fillMaxHeight()) {
                     when (app.pantalla) {
-                        Pantalla.SESION -> PantallaSesion(app.sesion, app.rutas.datos.toString())
-                        Pantalla.DESCARGAR -> PantallaPronto(Textos.DESCARGAR_PRONTO)
+                        Pantalla.SESION -> PantallaSesion(app.sesion, app.rutas.datos.toString(), alcance)
+                        Pantalla.DESCARGAR -> PantallaDescargar(app.descarga, app.edicion, app.rutas.descargas, alcance)
                     }
                 }
             }
@@ -43,7 +51,7 @@ fun App(app: EstadoApp) {
 }
 
 @Composable
-private fun Menu(actual: Pantalla, alElegir: (Pantalla) -> Unit) {
+private fun Menu(actual: Pantalla, tarea: String?, alElegir: (Pantalla) -> Unit) {
     Column(
         Modifier.width(210.dp).fillMaxHeight()
             .background(MaterialTheme.colorScheme.surfaceVariant)
@@ -62,14 +70,37 @@ private fun Menu(actual: Pantalla, alElegir: (Pantalla) -> Unit) {
                 TextButton(onClick = { alElegir(p) }, modifier = Modifier.fillMaxWidth()) { Text(p.titulo) }
             }
         }
+        // Lo que está haciendo Chrome ahora, se esté en la pantalla que se esté
+        if (tarea != null) {
+            Text(
+                "⏳ $tarea",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(start = 8.dp, top = 16.dp),
+            )
+        }
     }
 }
 
-/** Para las pantallas que todavía no están hechas. */
-@Composable
-fun PantallaPronto(texto: String) {
-    Box(Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
-        Text(texto, style = MaterialTheme.typography.bodyLarge)
+/** Verde para los ✔ (se lee bien en tema claro). */
+val VERDE = Color(0xFF1B7F3A)
+
+/** Abre una dirección en el navegador normal de la persona. */
+fun abrirEnNavegador(url: String) {
+    try {
+        Desktop.getDesktop().browse(URI(url))
+    } catch (_: Exception) {
+        // sin navegador por defecto: no pasa nada
+    }
+}
+
+/** Abre una carpeta o un archivo con el programa que tenga asociado Windows. */
+fun abrir(ruta: Path) {
+    try {
+        if (!Files.exists(ruta) && !ruta.fileName.toString().contains('.')) Files.createDirectories(ruta)
+        Desktop.getDesktop().open(ruta.toFile())
+    } catch (_: Exception) {
+        // si no se puede abrir, no pasa nada
     }
 }
 

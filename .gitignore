@@ -15,6 +15,9 @@ subidas/
 modelos/
 modelos-descargados/
 usuarios.json
+usuarios.json.bak
+usuarios.json.tmp
+ajustes.properties
 descargados.txt
 **/resultado.png
 **/error.png

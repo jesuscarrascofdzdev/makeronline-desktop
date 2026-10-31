@@ -18,12 +18,20 @@ enum class Pantalla(val titulo: String) {
  */
 class EstadoApp(val rutas: Rutas) {
     val hilo = HiloNavegador()
-    val sesion = EstadoSesion(rutas, hilo)
+    /** Qué está haciendo Chrome; lo comparten todas las pantallas. */
+    val ocupacion = Ocupacion()
+    val sesion = EstadoSesion(rutas, hilo, ocupacion)
+    /** Lo que se recuerda de una vez para otra (ajustes.properties). */
+    val ajustes = Ajustes(rutas.ajustes)
+    val descarga = EstadoDescarga(rutas, hilo, ocupacion, ajustes)
+    /** La ventana de añadir y quitar usuarios (botón "Editar" de Descargar). */
+    val edicion = EstadoEdicion(rutas, hilo, ocupacion, descarga)
 
     var pantalla by mutableStateOf(Pantalla.SESION)
 
-    /** Al cerrar la ventana: cierra Chrome si estaba abierto y para el hilo del navegador. */
+    /** Al cerrar la ventana: para lo que esté en marcha, cierra Chrome y para el hilo del navegador. */
     fun cerrar() {
+        descarga.alCerrarApp()
         sesion.alCerrarApp()
         hilo.close()
     }

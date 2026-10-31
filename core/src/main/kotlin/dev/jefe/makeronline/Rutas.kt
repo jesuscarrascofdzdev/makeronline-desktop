@@ -26,6 +26,9 @@ class Rutas @JvmOverloads constructor(
     /** Lista de usuarios del Downloader. */
     val usuarios: Path get() = datos.resolve("usuarios.json")
 
+    /** Ajustes de la app de escritorio que se recuerdan de una vez para otra. */
+    val ajustes: Path get() = datos.resolve("ajustes.properties")
+
     /**
      * Un id de modelo por línea. Segunda protección además del like: aunque el like
      * falle o se vacíe la carpeta de descargas, lo que está aquí no se vuelve a descargar.

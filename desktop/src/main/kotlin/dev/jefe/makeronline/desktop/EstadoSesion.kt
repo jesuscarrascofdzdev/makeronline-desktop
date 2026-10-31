@@ -6,6 +6,7 @@ import androidx.compose.runtime.setValue
 import dev.jefe.makeronline.AgenteException
 import dev.jefe.makeronline.Rutas
 import dev.jefe.makeronline.Sesion
+import kotlin.coroutines.cancellation.CancellationException
 
 /**
  * Lo que enseña la pantalla Sesión y lo que hacen sus botones.
@@ -13,15 +14,18 @@ import dev.jefe.makeronline.Sesion
  * Las funciones `suspend` se llaman desde la ventana: el trabajo con Chrome va al hilo del
  * navegador y, al volver, el estado se cambia ya en el hilo de la ventana.
  */
-class EstadoSesion(rutas: Rutas, private val hilo: HiloNavegador) {
-
+class EstadoSesion(
+    rutas: Rutas,
+    private val hilo: HiloNavegador,
+    private val ocupacion: Ocupacion,
+) {
     private val sesion = Sesion(rutas)
 
     /** null = todavía sin comprobar. */
     var estado by mutableStateOf<Sesion.Estado?>(null)
         private set
 
-    /** true mientras Chrome está trabajando: los botones se desactivan. */
+    /** true mientras esta pantalla tiene a Chrome trabajando (para la barra de progreso). */
     var ocupado by mutableStateOf(false)
         private set
 
@@ -33,20 +37,43 @@ class EstadoSesion(rutas: Rutas, private val hilo: HiloNavegador) {
     var esperandoLogin by mutableStateOf(false)
         private set
 
+    /** Si se pueden pulsar los botones: Chrome no está haciendo otra cosa (por ejemplo, descargar). */
+    val libre: Boolean get() = ocupacion.libre
+
     /** Chrome abierto para iniciar sesión. Solo se toca desde el hilo del navegador. */
     @Volatile
     private var abierta: Sesion.Abierta? = null
 
     suspend fun comprobar() {
-        if (ocupado) return
-        trabajar { estado = hilo.ejecutar { sesion.comprobar(ProgresoNulo) } }
+        if (!ocupacion.empezar(Textos.TAREA_COMPROBANDO)) return
+        ocupado = true
+        error = null
+        try {
+            estado = hilo.ejecutar { sesion.comprobar(ProgresoNulo) }
+        } catch (e: CancellationException) {
+            throw e // la app se está cerrando: no es un error
+        } catch (e: Exception) {
+            error = mensajeDe(e)
+        } finally {
+            ocupado = false
+            ocupacion.terminar()
+        }
     }
 
     suspend fun abrirParaIniciar() {
-        if (ocupado) return
-        trabajar {
+        if (!ocupacion.empezar(Textos.TAREA_INICIANDO_SESION)) return
+        ocupado = true
+        error = null
+        try {
             hilo.ejecutar { abierta = sesion.abrirParaIniciar(ProgresoNulo) }
-            esperandoLogin = true
+            esperandoLogin = true // Chrome sigue ocupado hasta que se cierre (ver cerrarChrome)
+        } catch (e: CancellationException) {
+            throw e // la app se está cerrando: no es un error
+        } catch (e: Exception) {
+            error = mensajeDe(e)
+            ocupacion.terminar()
+        } finally {
+            ocupado = false
         }
     }
 
@@ -66,8 +93,16 @@ class EstadoSesion(rutas: Rutas, private val hilo: HiloNavegador) {
     }
 
     private suspend fun cerrarChrome() {
-        trabajar { hilo.ejecutar { cerrarAbierta() } }
-        esperandoLogin = false
+        ocupado = true
+        try {
+            hilo.ejecutar { cerrarAbierta() }
+        } catch (_: Exception) {
+            // si ya estaba cerrado, no pasa nada
+        } finally {
+            ocupado = false
+            esperandoLogin = false
+            ocupacion.terminar()
+        }
     }
 
     private fun cerrarAbierta() {
@@ -75,18 +110,6 @@ class EstadoSesion(rutas: Rutas, private val hilo: HiloNavegador) {
         abierta = null
     }
 
-    /** Marca la pantalla como ocupada mientras dura [bloque] y convierte los fallos en un mensaje. */
-    private suspend fun trabajar(bloque: suspend () -> Unit) {
-        ocupado = true
-        error = null
-        try {
-            bloque()
-        } catch (e: AgenteException) {
-            error = e.message // por ejemplo: otro programa está usando Chrome
-        } catch (e: Exception) {
-            error = Textos.errorInesperado(e)
-        } finally {
-            ocupado = false
-        }
-    }
+    private fun mensajeDe(e: Exception): String? =
+        if (e is AgenteException) e.message else Textos.errorInesperado(e) // p. ej. otro programa usa Chrome
 }

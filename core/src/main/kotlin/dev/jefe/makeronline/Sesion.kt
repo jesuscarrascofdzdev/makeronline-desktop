@@ -12,6 +12,7 @@ import java.nio.file.Path
  *
  * - [comprobar] mira si Chrome está instalado y si la sesión guardada sirve.
  * - [abrirParaIniciar] abre Chrome en MakerOnline para que la persona inicie sesión con Google.
+ * - [buscarUsuario] busca en MakerOnline a alguien para añadirlo a la lista de usuarios.
  *
  * Todo lo que usa Chrome coge el candado (ver AgentLock), así que no choca con los
  * programas de terminal. Y como Playwright no admite varios hilos, hay que llamarlo
@@ -33,6 +34,14 @@ class Sesion(private val rutas: Rutas) {
         val nombre: String? = null,
         val motivo: String? = null,
     )
+
+    /**
+     * Lo encontrado al buscar a alguien para añadirlo a la lista.
+     *
+     * @property usuario quién es, o null si no se ha encontrado
+     * @property error   por qué no se ha encontrado, para enseñárselo a la persona (o null)
+     */
+    data class Busqueda(val usuario: BuscadorUsuarios.Usuario?, val error: String?)
 
     /**
      * Chrome abierto para iniciar sesión. Mientras está abierto tiene el candado:
@@ -65,8 +74,7 @@ class Sesion(private val rutas: Rutas) {
         AgentLock.acquire(rutas.candado, "MakerOnline Desktop (comprobando la sesión)", false, progreso).use {
             Playwright.create().use { pw ->
                 Browsers.openChrome(pw, rutas.perfilChrome, 0.0, true, false).use { ctx ->
-                    val token = ctx.cookies(WEB)
-                        .firstOrNull { it.name == COOKIE && !it.value.isNullOrBlank() }?.value
+                    val token = token(ctx)
                         ?: return Estado(chromeInstalado = true, iniciada = false, motivo = "no hay sesión iniciada")
                     // Mismo endpoint que usa la web al cargar tu perfil (comprobado el 31/10/2026)
                     val r = ctx.request().get(
@@ -105,11 +113,46 @@ class Sesion(private val rutas: Rutas) {
         }
     }
 
+    /**
+     * Busca en MakerOnline a la persona que se quiere añadir a usuarios.json, igual que el
+     * Downloader al repasar la lista: por la URL de su perfil (lo más fiable), su @ o su nombre.
+     * Abre Chrome sin ventana unos segundos.
+     *
+     * @throws AgenteException si no hay sesión o si otro programa está usando Chrome
+     */
+    fun buscarUsuario(entrada: String, progreso: Progreso): Busqueda {
+        if (!Files.isDirectory(rutas.perfilChrome)) throw AgenteException(SIN_SESION)
+        AgentLock.acquire(rutas.candado, "MakerOnline Desktop (buscando un usuario)", false, progreso).use {
+            Playwright.create().use { pw ->
+                Browsers.openChrome(pw, rutas.perfilChrome, 0.0, true, false).use { ctx ->
+                    ctx.setDefaultTimeout(30_000.0)
+                    val token = token(ctx) ?: throw AgenteException(SIN_SESION)
+                    val page = if (ctx.pages().isEmpty()) ctx.newPage() else ctx.pages()[0]
+                    // El buscador cuenta con progreso.error por qué no lo encuentra: aquí se apunta
+                    val errores = ArrayList<String>()
+                    val apuntando = object : Progreso by progreso {
+                        override fun error(texto: String) {
+                            errores += texto
+                        }
+                    }
+                    val u = BuscadorUsuarios(page, Api(ctx.request(), token), apuntando).buscar(entrada.trim())
+                    val error = if (u != null) null else errores.joinToString("\n").ifBlank { "No lo encuentro en MakerOnline." }
+                    return Busqueda(u, error)
+                }
+            }
+        }
+    }
+
     companion object {
-        private const val WEB = "https://www.makeronline.com"
+        private const val WEB = Api.WEB
         /** La cookie de la sesión de MakerOnline (ver el documento de contexto). */
         private const val COOKIE = "mo_access_token"
         private val JSON = ObjectMapper()
+        private const val SIN_SESION = "No hay sesión iniciada en MakerOnline. Iníciala en la pantalla Sesión."
+
+        /** El valor de la cookie de la sesión, o null si no hay. */
+        private fun token(ctx: BrowserContext): String? =
+            ctx.cookies(WEB).firstOrNull { it.name == COOKIE && !it.value.isNullOrBlank() }?.value
 
         /** Lee la respuesta de api/user/personal/info: code 0 = sesión válida. */
         @JvmStatic

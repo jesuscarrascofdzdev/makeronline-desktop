@@ -1,0 +1,39 @@
+package dev.jefe.makeronline.desktop
+
+import java.nio.file.Files
+import java.nio.file.Path
+import java.util.Properties
+
+/**
+ * Lo que la app recuerda de una vez para otra, en ajustes.properties (ver Rutas.ajustes).
+ * Si el archivo no existe o no se puede leer, se usan los valores de siempre.
+ */
+class Ajustes(private val archivo: Path) {
+    private val valores = Properties().apply {
+        try {
+            if (Files.exists(archivo)) Files.newBufferedReader(archivo, Charsets.UTF_8).use { load(it) }
+        } catch (_: Exception) {
+            // archivo dañado: valores de siempre
+        }
+    }
+
+    /** Si al descargar toda la lista se incluye al creador de la app (por defecto, sí). */
+    var incluirCreador: Boolean
+        get() = valores.getProperty(INCLUIR_CREADOR)?.toBooleanStrictOrNull() ?: true
+        set(v) {
+            valores.setProperty(INCLUIR_CREADOR, v.toString())
+            guardar()
+        }
+
+    private fun guardar() {
+        try {
+            Files.newBufferedWriter(archivo, Charsets.UTF_8).use { valores.store(it, "Ajustes de MakerOnline Desktop") }
+        } catch (_: Exception) {
+            // si no se puede guardar, la próxima vez se usa el valor de siempre
+        }
+    }
+
+    private companion object {
+        const val INCLUIR_CREADOR = "incluirCreador"
+    }
+}

@@ -1,16 +1,13 @@
 package dev.jefe.makeronline;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.core.json.JsonReadFeature;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.json.JsonMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.google.gson.JsonObject;
 import com.microsoft.playwright.*;
 import com.microsoft.playwright.options.AriaRole;
 import com.microsoft.playwright.options.Cookie;
-import com.microsoft.playwright.options.RequestOptions;
 
 import java.io.IOException;
 import java.net.URLEncoder;
@@ -25,12 +22,10 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
-import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
@@ -74,34 +69,24 @@ import java.util.regex.Pattern;
 public class Downloader {
 
     /** Se muestra al arrancar: así se sabe qué versión del código se está ejecutando. */
-    private static final String VERSION = "10 (fase 1c: parar)";
+    private static final String VERSION = "11 (fase 2c: buscador de usuarios aparte)";
 
-    private static final String WEB = "https://www.makeronline.com";
+    private static final String WEB = Api.WEB;
     private static final int ULTIMOS_POR_DEFECTO = 10;
     private static final ObjectMapper JSON = new ObjectMapper();
-    /** Para usuarios.json: admite comentarios // y una coma de más al final. */
-    private static final ObjectMapper JSON_LISTA = JsonMapper.builder()
-            .enable(JsonReadFeature.ALLOW_JAVA_COMMENTS, JsonReadFeature.ALLOW_TRAILING_COMMA)
-            .build();
-    private static final String PLANTILLA_LISTA = """
-            [
-              // Un usuario por línea, entre comillas y separados por comas.
-              // Lo más seguro: "@usuario_1234567 / NombreVisible" (el @ y el nombre que se ve en su perfil).
-              // También vale solo el @, solo el nombre o la URL de su perfil.
-              // Las líneas que empiezan por // se ignoran.
-              // "@NombreUsuario_1234567 / NombreVisible",
-            ]
-            """;
-    private static final Pattern UUID_RE = Pattern.compile(
-            "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}");
     private static final DateTimeFormatter STAMP = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm");
 
     /** Código con el que MakerOnline pide captcha. No se intenta saltar: se para. */
     private static final int CODIGO_CAPTCHA = 1003;
 
-    /** usuario == null → todos los de usuarios.json; ultimos == 0 → todos sus modelos. */
+    /**
+     * usuario == null → todos los de usuarios.json; ultimos == 0 → todos sus modelos.
+     *
+     * @param fijos usuarios que se repasan siempre los primeros, antes de los de usuarios.json
+     *              (la app pone aquí al creador). Solo cuentan si usuario == null. En la terminal, ninguno.
+     */
     public record Opciones(String usuario, int ultimos, boolean simular, int max, int espera,
-                           boolean perfil, Modo modo, boolean esperar) {}
+                           boolean perfil, Modo modo, boolean esperar, List<String> fijos) {}
 
     /** Cómo se ve Chrome mientras trabaja. */
     public enum Modo {
@@ -165,8 +150,6 @@ public class Downloader {
 
         Estado(int max) { this.restantes = max; }
     }
-
-    record Usuario(String id, String nombre, String handle) {}
 
     record Modelo(long id, String titulo, boolean liked, boolean premium) {}
 
@@ -279,8 +262,9 @@ public class Downloader {
      */
     public Resumen ejecutar(Opciones op) throws Exception {
         progreso.info("Downloader · versión " + VERSION);
-        // Usuario por argumento → solo ese; si no, todos los de usuarios.json
-        List<String> entradas = op.usuario() != null ? List.of(op.usuario()) : leerLista();
+        // Usuario por argumento → solo ese; si no, los fijos y luego todos los de usuarios.json
+        List<String> entradas = op.usuario() != null ? List.of(op.usuario())
+                : ListaUsuarios.conFijos(op.fijos(), leerLista(!op.fijos().isEmpty()));
         if (entradas.isEmpty()) return new Resumen(0, 0, 0, 0, List.of(), op.simular(), false);
         if (!Files.isDirectory(rutas.getPerfilChrome())) {
             throw new AgenteException("No hay sesión guardada. Ejecuta primero SaveSession.");
@@ -355,13 +339,13 @@ public class Downloader {
 
     private void procesarUsuario(Page page, BrowserContext ctx, Api api, String entrada,
                                  Opciones op, Estado est) throws Exception {
-        Usuario u = resolverUsuario(page, api, entrada);
+        BuscadorUsuarios.Usuario u = new BuscadorUsuarios(page, api, progreso).buscar(entrada);
         if (u == null) {
             est.errores++;
             return;
         }
         progreso.info("Usuario: " + u.nombre() + "  " + u.handle()
-                + "\n         " + WEB + "/en/user/personalInfo/" + u.id() + ".html");
+                + "\n         " + u.url());
 
         List<Modelo> revisados = listarModelos(api, u.id(), op.ultimos());
         List<Modelo> pendientes = revisados.stream().filter(m -> !m.liked()).toList();
@@ -429,36 +413,28 @@ public class Downloader {
         progreso.paso(u.nombre() + ": " + (est.descargados - antes) + " descargados en " + carpetaUsuario);
     }
 
-    /** Lee usuarios.json (o lo crea vacío la primera vez). */
-    private List<String> leerLista() throws IOException {
+    /**
+     * Lee usuarios.json (o lo crea vacío la primera vez, con las instrucciones en comentarios).
+     *
+     * @param hayFijos si hay usuarios fijos: entonces una lista vacía no impide seguir
+     */
+    private List<String> leerLista(boolean hayFijos) throws IOException {
         Path lista = rutas.getUsuarios();
         if (!Files.exists(lista)) {
-            Files.writeString(lista, PLANTILLA_LISTA, StandardCharsets.UTF_8);
+            ListaUsuarios.guardar(lista, List.of());
             progreso.info("He creado " + lista.toAbsolutePath());
-            progreso.info("Añade ahí los usuarios que quieres repasar y vuelve a ejecutar.");
+            if (!hayFijos) progreso.info("Añade ahí los usuarios que quieres repasar y vuelve a ejecutar.");
             return List.of();
         }
-        JsonNode raiz;
-        try {
-            raiz = JSON_LISTA.readTree(lista.toFile());
-        } catch (JsonProcessingException e) {
-            String donde = e.getLocation() == null ? "" : " (línea " + e.getLocation().getLineNr() + ")";
-            progreso.error("usuarios.json no es válido" + donde + ": " + e.getOriginalMessage()
-                    + "\n  Tiene que ser una lista: [\"usuario1\", \"usuario2\"]");
+        // Mismas reglas que en la app (ver ListaUsuarios)
+        ListaUsuarios.Lectura lectura = ListaUsuarios.leer(lista);
+        if (lectura.getError() != null) {
+            progreso.error(lectura.getError());
             return List.of();
         }
-        if (raiz == null || !raiz.isArray()) {
-            progreso.error("usuarios.json tiene que ser una lista: [\"usuario1\", \"usuario2\"]");
-            return List.of();
-        }
-        List<String> out = new ArrayList<>();
-        Set<String> vistos = new LinkedHashSet<>();
-        for (JsonNode n : raiz) {
-            String s = n.asText("").trim();
-            if (!s.isEmpty() && vistos.add(s.toLowerCase())) out.add(s);
-        }
-        if (out.isEmpty()) progreso.info("usuarios.json está vacío: añade algún usuario y vuelve a ejecutar.");
-        else progreso.info("Usuarios en la lista: " + out.size());
+        List<String> out = lectura.getEntradas();
+        if (!out.isEmpty()) progreso.info("Usuarios en la lista: " + out.size());
+        else if (!hayFijos) progreso.info("usuarios.json está vacío: añade algún usuario y vuelve a ejecutar.");
         return out;
     }
 
@@ -750,92 +726,6 @@ public class Downloader {
         return s == null ? null : JSON.readTree((String) s);
     }
 
-    private Usuario resolverUsuario(Page page, Api api, String entrada) throws JsonProcessingException {
-        // URL del perfil o id directamente: el nombre se saca de la página del perfil
-        Matcher mm = UUID_RE.matcher(entrada);
-        if (mm.find()) {
-            String id = mm.group().toLowerCase();
-            page.navigate(WEB + "/en/user/personalInfo/" + id + ".html");
-            Object s = page.evaluate("() => { const d = window.__NUXT__ && window.__NUXT__.data && window.__NUXT__.data[0];"
-                    + " return d && d.userInfo && d.userInfo.id ? JSON.stringify(d.userInfo) : null; }");
-            if (s == null) {
-                progreso.error("No encuentro ningún usuario con id " + id);
-                return null;
-            }
-            return usuario(JSON.readTree((String) s));
-        }
-
-        // El buscador de MakerOnline busca por el NOMBRE VISIBLE, no por el @. El @ conserva el
-        // nombre de cuenta original (p. ej. @User_1234567 puede llamarse "Pepe"), así que con solo el @
-        // a veces no aparece. Por eso se admite "@handle / nombre visible": se busca por el
-        // nombre y se elige la cuenta cuyo @ coincide exactamente.
-        String clave;              // @ sin la arroba, o el nombre si no hay @
-        boolean soloPorHandle;     // con "@handle / nombre" solo vale coincidir el @
-        Set<String> busquedas = new LinkedHashSet<>();
-        String[] partes = entrada.split("\\s*/\\s*");
-        if (partes.length == 2 && !partes[0].isBlank() && !partes[1].isBlank()) {
-            boolean primeroEsHandle = partes[0].startsWith("@") || !partes[1].startsWith("@");
-            String handle = primeroEsHandle ? partes[0] : partes[1];
-            String nombre = primeroEsHandle ? partes[1] : partes[0];
-            clave = handle.replaceFirst("^@", "");
-            soloPorHandle = true;
-            busquedas.add(nombre);
-        } else if (partes.length > 1) {
-            progreso.error("No entiendo '" + entrada + "'. Usa \"@usuario_1234567 / NombreVisible\", el @, el nombre o la URL.");
-            return null;
-        } else {
-            // "NombreVisible", "@Nombre" o "@NombreUsuario_1234567"
-            clave = entrada.replaceFirst("^@", "");
-            soloPorHandle = false;
-        }
-        busquedas.add(clave);
-        busquedas.add(clave.replaceFirst("_\\d+$", ""));
-
-        List<JsonNode> vistos = new ArrayList<>();
-        for (String keyword : busquedas) {
-            JsonNode data = api.post("/api/search/user", Map.of("keyword", keyword, "page", 1, "page_size", 20));
-            List<JsonNode> porHandle = new ArrayList<>();
-            List<JsonNode> porNombre = new ArrayList<>();
-            for (JsonNode n : data.path("data")) {
-                vistos.add(n);
-                if (n.path("show_user_name").asText("").equalsIgnoreCase("@" + clave)) porHandle.add(n);
-                else if (!soloPorHandle && (n.path("name").asText("").equalsIgnoreCase(clave)
-                        || n.path("display_name").asText("").equalsIgnoreCase(clave))) porNombre.add(n);
-            }
-            if (porHandle.size() == 1) return usuario(porHandle.get(0));
-            if (porNombre.size() == 1) return usuario(porNombre.get(0));
-            if (porNombre.size() > 1) {
-                StringBuilder msg = new StringBuilder("Hay varios usuarios llamados '" + clave
-                        + "'. Usa su @ completo o la URL del perfil:");
-                porNombre.forEach(n -> msg.append("\n   ").append(describir(n)));
-                progreso.error(msg.toString());
-                return null;
-            }
-        }
-        StringBuilder msg = new StringBuilder("No encuentro al usuario '" + entrada + "'.\n");
-        msg.append(soloPorHandle
-                ? "  Revisa que el nombre visible esté bien escrito, o pon la URL de su perfil."
-                : "  Si su nombre visible es distinto del @, escribe \"@usuario_1234567 / NombreVisible\" o pon la URL de su perfil.");
-        if (!vistos.isEmpty()) {
-            msg.append("\n  Parecidos:");
-            vistos.stream().limit(5).forEach(n -> msg.append("\n   ").append(describir(n)));
-        }
-        progreso.error(msg.toString());
-        return null;
-    }
-
-    /** "@usuario_1234567 / NombreVisible  (12 modelos)" de un resultado del buscador. */
-    private static String describir(JsonNode n) {
-        return n.path("show_user_name").asText() + " / " + n.path("display_name").asText()
-                + "  (" + n.path("designs").asInt() + " modelos)";
-    }
-
-    private static Usuario usuario(JsonNode n) {
-        String id = n.path("user_id").asText(n.path("id").asText());
-        String nombre = n.path("display_name").asText(n.path("name").asText(id));
-        return new Usuario(id, nombre, n.path("show_user_name").asText(""));
-    }
-
     /**
      * Modelos de "Uploads" del usuario (del más reciente al más antiguo), con
      * is_like según TU cuenta.
@@ -935,40 +825,6 @@ public class Downloader {
     }
 
     // ================================================================ utilidades
-
-    /** Peticiones a la API de MakerOnline con tu sesión (sin cargar páginas). */
-    private record Api(APIRequestContext req, String token) {
-        JsonNode get(String path) {
-            return leer(req.get(WEB + path, RequestOptions.create()
-                    .setHeader("Authorization", token)
-                    .setHeader("Accept", "application/json")), path);
-        }
-
-        JsonNode post(String path, Object cuerpo) {
-            try {
-                return leer(req.post(WEB + path, RequestOptions.create()
-                        .setHeader("Authorization", token)
-                        .setHeader("Accept", "application/json")
-                        .setHeader("Content-Type", "application/json")
-                        .setData(JSON.writeValueAsString(cuerpo))), path);
-            } catch (JsonProcessingException e) {
-                throw new IllegalStateException(e);
-            }
-        }
-
-        private static JsonNode leer(APIResponse r, String path) {
-            if (!r.ok()) throw new IllegalStateException("La API ha respondido HTTP " + r.status() + " a " + path);
-            try {
-                JsonNode j = JSON.readTree(r.text());
-                if (j.path("code").asInt(-1) != 0) {
-                    throw new IllegalStateException("La API ha respondido '" + j.path("message").asText("?") + "' a " + path);
-                }
-                return j.path("data");
-            } catch (JsonProcessingException e) {
-                throw new IllegalStateException("Respuesta no válida de " + path);
-            }
-        }
-    }
 
     /** La sesión de MakerOnline es la cookie mo_access_token; la web la manda como cabecera Authorization. */
     private static String token(BrowserContext ctx) {
@@ -1086,7 +942,7 @@ public class Downloader {
             return null;
         }
         if (max < 1 || espera < 0 || ultimos < 0) return null;
-        return new Opciones(usuario, ultimos, simular, max, espera, perfil, modo, esperar);
+        return new Opciones(usuario, ultimos, simular, max, espera, perfil, modo, esperar, List.of());
     }
 
     private static void ayuda() {

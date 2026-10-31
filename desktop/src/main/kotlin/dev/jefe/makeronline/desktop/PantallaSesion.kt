@@ -16,24 +16,16 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
-import java.awt.Desktop
-import java.net.URI
-
-/** Verde y rojo para los ✔ y ✘ (se leen bien en tema claro). */
-private val VERDE = Color(0xFF1B7F3A)
 
 @Composable
-fun PantallaSesion(s: EstadoSesion, carpetaDatos: String) {
-    val scope = rememberCoroutineScope()
-
+fun PantallaSesion(s: EstadoSesion, carpetaDatos: String, alcance: CoroutineScope) {
     // La primera vez que se abre la pantalla, se comprueba la sesión
     LaunchedEffect(Unit) {
-        if (s.estado == null) s.comprobar()
+        if (s.estado == null) alcance.launch { s.comprobar() }
     }
 
     Column(
@@ -76,10 +68,10 @@ fun PantallaSesion(s: EstadoSesion, carpetaDatos: String) {
             Tarjeta {
                 Text(Textos.INSTRUCCIONES_LOGIN, style = MaterialTheme.typography.bodyMedium)
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Button(enabled = !s.ocupado, onClick = { scope.launch { s.yaHeEntrado() } }) {
+                    Button(enabled = !s.ocupado, onClick = { alcance.launch { s.yaHeEntrado() } }) {
                         Text(Textos.YA_HE_ENTRADO)
                     }
-                    OutlinedButton(enabled = !s.ocupado, onClick = { scope.launch { s.cancelarInicio() } }) {
+                    OutlinedButton(enabled = !s.ocupado, onClick = { alcance.launch { s.cancelarInicio() } }) {
                         Text(Textos.CANCELAR)
                     }
                 }
@@ -87,12 +79,12 @@ fun PantallaSesion(s: EstadoSesion, carpetaDatos: String) {
         } else {
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 Button(
-                    enabled = !s.ocupado && e?.chromeInstalado != false,
-                    onClick = { scope.launch { s.abrirParaIniciar() } },
+                    enabled = s.libre && e?.chromeInstalado != false,
+                    onClick = { alcance.launch { s.abrirParaIniciar() } },
                 ) {
                     Text(if (e?.iniciada == true) Textos.VOLVER_A_INICIAR else Textos.INICIAR_SESION)
                 }
-                OutlinedButton(enabled = !s.ocupado, onClick = { scope.launch { s.comprobar() } }) {
+                OutlinedButton(enabled = s.libre, onClick = { alcance.launch { s.comprobar() } }) {
                     Text(Textos.COMPROBAR)
                 }
             }
@@ -110,11 +102,3 @@ fun PantallaSesion(s: EstadoSesion, carpetaDatos: String) {
     }
 }
 
-/** Abre una dirección en el navegador normal de la persona. */
-private fun abrirEnNavegador(url: String) {
-    try {
-        Desktop.getDesktop().browse(URI(url))
-    } catch (_: Exception) {
-        // sin navegador por defecto: no pasa nada
-    }
-}

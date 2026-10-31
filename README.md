@@ -6,7 +6,7 @@ App de escritorio para subir y descargar modelos 3D de [MakerOnline](https://www
 - La sesión de MakerOnline (perfil de Chrome) **nunca sale de tu ordenador**.
 - Los captchas **no se saltan**: se enseña la ventana para que los resuelva la persona.
 
-> **Estado: fase 2 en curso (2a: ventana con la pantalla Sesión).** Fase 1 terminada. El código de la herramienta de terminal está en el módulo `core` y se está preparando para usarlo desde la app (hechos: 1a, las rutas están en `Rutas`; 1b, `core` avisa de lo que hace con `Progreso`, y el Uploader espera a que terminen las subidas y confirma el borrador; 1c, se puede parar sin dejar nada a medias; 1d, `--revisar` sin Inspector). La app ya tiene menú y pantalla de Sesión; Descargar llega en el paso 2b.
+> **Estado: fase 2 en curso (2a: ventana con la pantalla Sesión; 2b: pantalla Descargar; 2c: añadir y quitar usuarios).** Fase 1 terminada. El código de la herramienta de terminal está en el módulo `core` y se está preparando para usarlo desde la app (hechos: 1a, las rutas están en `Rutas`; 1b, `core` avisa de lo que hace con `Progreso`, y el Uploader espera a que terminen las subidas y confirma el borrador; 1c, se puede parar sin dejar nada a medias; 1d, `--revisar` sin Inspector). La app ya tiene menú, pantalla de Sesión y pantalla de Descargar, con un botón Editar para añadir y quitar usuarios de la lista. Al descargar toda la lista, la cuenta del creador de la app (juji-nya) va siempre la primera: viene marcada y se puede desmarcar, pero no quitar.
 
 ---
 
@@ -43,11 +43,11 @@ Arriba a la derecha, en el desplegable de ejecución, está la carpeta **MakerOn
 | Subir (revisar) | Sube los modelos de `subidas/pendientes/` y, antes de guardar cada borrador, te deja mirarlo en Chrome: ENTER lo guarda; `no` + ENTER lo descarta (se queda en `pendientes/`) |
 | Subir | Sube los modelos de `subidas/pendientes/` como borrador |
 | Codegen | Chrome con sesión y el Playwright Inspector, para grabar selectores |
-| App de escritorio | Abre la app. Usa la misma carpeta de datos que los programas de terminal (la raíz del repo), así que comparte la sesión, `usuarios.json` y `descargados.txt` |
+| App de escritorio | Abre la app: pantallas Sesión y Descargar (simular, descargar, parar con un botón y editar la lista de usuarios). Usa la misma carpeta de datos que los programas de terminal (la raíz del repo), así que comparte la sesión, `usuarios.json` y `descargados.txt` |
 
 **Para parar Descargar o Subir sin dejar nada a medias**, escribe `parar` en la consola y pulsa ENTER. El Downloader termina el modelo que esté bajando y no empieza otro; el Uploader no guarda el borrador que tenga a medias, que se queda en `pendientes/`. El botón *Stop* de IntelliJ, en cambio, lo corta en seco.
 
-Los programas de terminal se ejecutan desde la raíz del repo. Ahí se crean `chrome-profile/`, `usuarios.json`, `descargados.txt`, `subidas/` y `modelos-descargados/`. **Nada de eso se sube a git.**
+Los programas de terminal se ejecutan desde la raíz del repo. Ahí se crean `chrome-profile/`, `usuarios.json` (y `usuarios.json.bak`, la copia que guarda la app antes de cambiarlo por primera vez), `descargados.txt`, `ajustes.properties` (lo que recuerda la app), `subidas/` y `modelos-descargados/`. **Nada de eso se sube a git.**
 
 **Desde la terminal (opcional)**
 - Compilar todo: `gradlew build`
@@ -71,8 +71,14 @@ Los programas de terminal se ejecutan desde la raíz del repo. Ahí se crean `ch
   - Lo comprobado en la web está en el documento de contexto del proyecto.
 - **`desktop`:** Kotlin + Compose for Desktop, paquete `dev.jefe.makeronline.desktop`. Todos los textos de la interfaz están en `Textos.kt`.
   - Todo lo que toca Chrome va en `HiloNavegador`, un único hilo, porque Playwright no admite varios.
-  - Cada pantalla tiene su estado (`EstadoSesion`…) con funciones `suspend`: el trabajo va al hilo del navegador y el estado se cambia al volver, en el hilo de la ventana.
+  - Cada pantalla tiene su estado (`EstadoSesion`, `EstadoDescarga`) con funciones `suspend`: el trabajo va al hilo del navegador y el estado se cambia al volver, en el hilo de la ventana. Se lanzan con el `CoroutineScope` de `App`, no con el de cada pantalla, para que sigan al cambiar de pantalla.
+  - `Ocupacion` dice qué está haciendo Chrome; la comparten todas las pantallas y solo deja empezar una tarea a la vez.
+  - `ProgresoApp` convierte los avisos de `Progreso` en `Evento`s y los pasa al hilo de la ventana, en orden.
   - La carpeta de datos llega por la propiedad `makeronline.datos`, que pone la tarea `run` de Gradle; en la fase 4 será la carpeta del usuario.
   - `core/Sesion` comprueba la sesión (cookie `mo_access_token` + `api/user/personal/info`) y abre Chrome para iniciarla.
+  - `core/ListaUsuarios` lee y guarda `usuarios.json` (lo usan el Downloader y la app) y saca un nombre legible de cada entrada (`"Nombre · URL-del-perfil"`, `"@usuario / Nombre"`…). Al guardar reescribe el archivo entero; antes, si no existe, copia el original en `usuarios.json.bak`.
+  - `core/BuscadorUsuarios` encuentra a un usuario por la URL de su perfil (`window.__NUXT__.data[0].userInfo`) o por el buscador (`api/search/user`). Lo usan el Downloader y `Sesion.buscarUsuario`, que es lo que llama la app al añadir a alguien; la app lo guarda como `"Nombre · URL-del-perfil"`. `core/Api` hace las peticiones a la API con el token de la sesión.
+  - `EstadoEdicion` + `DialogoUsuarios`: la ventana de Editar (añadir comprobando en MakerOnline, quitar con confirmación).
+  - `Creador`: la cuenta del creador, que la app pasa al Downloader en `Opciones.fijos` (va antes que `usuarios.json`, sin repetirse) cuando se descarga toda la lista y está marcada. No está en `usuarios.json` y no se puede quitar; la casilla se recuerda en `ajustes.properties` (`Ajustes`). La terminal no la incluye.
 - **Reglas:** textos y comentarios en español. No inventar selectores ni endpoints de MakerOnline. Pausa de 10 a 30 s entre descargas y nunca en paralelo. No saltar captchas.
 - **Compilar:** `gradlew build`. No hay tests todavía.
