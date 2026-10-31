@@ -27,15 +27,15 @@ import java.util.stream.Stream;
  * y una captura del momento del fallo).
  *
  * Argumentos (opcionales):
- *   --revisar   se para justo antes de guardar el borrador para que mires el
- *               formulario. Pulsa "Resume" en el Inspector para continuar.
+ *   --revisar   con todo subido, se para antes de guardar cada borrador para que mires
+ *               el formulario: ENTER lo guarda; "no" lo descarta (se queda en pendientes/).
  *   --esperar   si el Downloader (u otro programa del agente) está en marcha,
  *               espera a que termine en vez de salir.
- *   --diagnostico  TEMPORAL: graba en subidas/diagnostico_<fecha>_<modelo>.txt cómo
- *               avanzan las subidas y qué pasa al guardar, y espera a que pulses
- *               ENTER antes de guardar (ver DiagnosticoSubida).
  *   nombre ...  solo procesa esas carpetas de pendientes/ (sin nombres, todas).
  *               Ejemplo: --revisar llavero-gato
+ *
+ * Para pararlo sin dejar nada a medias: escribir "parar" y ENTER en la consola. Lo que
+ * no se haya guardado se queda en pendientes/.
  */
 public class Uploader {
 
@@ -52,9 +52,8 @@ public class Uploader {
      * @param revisar  se para justo antes de guardar cada borrador (--revisar)
      * @param carpetas solo estas carpetas de pendientes/; vacía = todas
      * @param esperar  si otro programa del agente está en marcha, espera a que termine (--esperar)
-     * @param diagnostico TEMPORAL: graba cómo avanzan las subidas (--diagnostico)
      */
-    public record Opciones(boolean revisar, List<String> carpetas, boolean esperar, boolean diagnostico) {}
+    public record Opciones(boolean revisar, List<String> carpetas, boolean esperar) {}
 
     /**
      * Cómo ha ido una ejecución.
@@ -62,26 +61,47 @@ public class Uploader {
      * @param subidos  guardados como borrador
      * @param conError fallaron al subir (están en errores/ con error.txt y una captura)
      * @param invalidos no pasaron la validación (también están en errores/)
+     * @param sinSubir  no se han guardado porque se ha parado o se han descartado al revisar
+     *                  (siguen en pendientes/)
+     * @param parado    true si se ha parado a petición de la persona
      */
-    public record Resumen(int subidos, int conError, int invalidos) {}
+    public record Resumen(int subidos, int conError, int invalidos, int sinSubir, boolean parado) {}
+
+    /** La persona ha decidido no guardar este borrador al revisarlo. */
+    private static final class ModeloDescartado extends RuntimeException {
+        ModeloDescartado() { super("descartado al revisar"); }
+    }
 
     /** Dónde están la sesión de Chrome y las carpetas de subidas. */
     private final Rutas rutas;
     /** A quién se le cuenta lo que va pasando (terminal o app). */
     private final Progreso progreso;
+    /** Si se pide parar, se para en el siguiente punto seguro. */
+    private final Cancelacion cancelacion;
+    /** Pregunta si se guarda cada borrador (solo con --revisar). */
+    private final Revision revision;
 
-    public Uploader(Rutas rutas, Progreso progreso) {
+    public Uploader(Rutas rutas, Progreso progreso, Cancelacion cancelacion, Revision revision) {
         this.rutas = rutas;
         this.progreso = progreso;
+        this.cancelacion = cancelacion;
+        this.revision = revision;
+    }
+
+    /** Sin parar ni revisión (con --revisar, guarda sin preguntar). */
+    public Uploader(Rutas rutas, Progreso progreso) {
+        this(rutas, progreso, new Cancelacion(), modelo -> true);
     }
 
     public static void main(String[] args) throws Exception {
         Opciones op = leerArgs(args);
         Rutas rutas = Rutas.carpetaActual();
         Progreso progreso = new ProgresoConsola();
+        Cancelacion cancelacion = new Cancelacion();
         // Solo un programa del agente a la vez: comparten chrome-profile/
         try (AgentLock lock = AgentLock.acquire(rutas.getCandado(), "Uploader", op.esperar(), progreso)) {
-            new Uploader(rutas, progreso).ejecutar(op);
+            EntradaConsola.iniciar(cancelacion, progreso);
+            new Uploader(rutas, progreso, cancelacion, new RevisionConsola(progreso, cancelacion)).ejecutar(op);
         } catch (AgenteException e) {
             progreso.error(e.getMessage());
             System.exit(e.getCodigoSalida());
@@ -93,8 +113,7 @@ public class Uploader {
         return new Opciones(
                 lista.contains("--revisar"),
                 lista.stream().filter(a -> !a.startsWith("--")).toList(), // nombres de carpeta
-                lista.contains("--esperar"),
-                lista.contains("--diagnostico"));
+                lista.contains("--esperar"));
     }
 
     /**
@@ -130,7 +149,7 @@ public class Uploader {
 
         if (carpetas.isEmpty()) {
             progreso.info("No hay nada en " + pendientes.toAbsolutePath());
-            return new Resumen(0, 0, 0);
+            return new Resumen(0, 0, 0, 0, false);
         }
         int invalidos = 0;
         for (Path dir : carpetas) {
@@ -145,38 +164,47 @@ public class Uploader {
         }
         if (listos.isEmpty()) {
             progreso.info("Ningún modelo válido. Revisa " + rutas.getErrores() + ".");
-            return new Resumen(0, 0, invalidos);
+            return new Resumen(0, 0, invalidos, 0, false);
         }
 
         // 2) Subir los válidos
-        int ok = 0, ko = 0;
+        int ok = 0, ko = 0, sinSubir = 0;
+        boolean parado = false;
         try (Playwright pw = Playwright.create();
              BrowserContext ctx = Browsers.openChrome(pw, rutas.getPerfilChrome(), 150)) {
             ctx.setDefaultTimeout(30_000);
 
-            for (int i = 0; i < listos.size(); i++) {
+            for (int i = 0; i < listos.size() && !parado; i++) {
+                if (cancelacion.pedida()) {
+                    parado = true;
+                    sinSubir += listos.size() - i;
+                    break;
+                }
                 ModelFolder m = listos.get(i);
                 progreso.modelo(i + 1, listos.size(), m.name());
                 Page page = ctx.newPage();
-                DiagnosticoSubida diag = op.diagnostico()
-                        ? new DiagnosticoSubida(page, rutas.getSubidas().resolve(
-                                "diagnostico_" + LocalDateTime.now().format(STAMP) + "_" + m.name() + ".txt"), progreso)
-                        : null;
                 boolean guardado = false;
                 try {
-                    subir(page, m, op.revisar(), diag);
+                    subir(page, m, op.revisar());
                     guardado = true;
                     captura(page, m.dir().resolve("resultado.png"));
+                } catch (CanceladoException e) {
+                    // No es un error: el borrador no se ha guardado y la carpeta se queda en pendientes/
+                    parado = true;
+                    sinSubir += listos.size() - i;
+                    progreso.info("⏹ " + m.name() + " no se ha guardado: sigue en pendientes/.");
+                } catch (ModeloDescartado e) {
+                    sinSubir++;
+                    progreso.saltado("No se guarda " + m.name() + ": sigue en pendientes/.");
                 } catch (Exception e) {
-                    if (diag != null) diag.marca("ERROR: " + e);
                     progreso.error("Error: " + e.getMessage());
                     captura(page, m.dir().resolve("error.png"));
                     // Primero se cierra la pestaña: así Chrome deja de leer los archivos y Windows deja moverlos
-                    cerrar(page, diag);
+                    cerrar(page);
                     moverAErrores(m.dir(), e.toString());
                     ko++;
                 } finally {
-                    cerrar(page, diag);
+                    cerrar(page);
                 }
                 if (guardado) {
                     ok++;
@@ -193,13 +221,13 @@ public class Uploader {
                 }
             }
         }
-        progreso.info(String.format("%nTerminado: %d subidos, %d con error.", ok, ko));
-        return new Resumen(ok, ko, invalidos);
+        progreso.info(String.format("%n%s: %d subidos, %d con error.", parado ? "Parado" : "Terminado", ok, ko)
+                + (sinSubir > 0 ? " " + sinSubir + " siguen en pendientes/." : ""));
+        return new Resumen(ok, ko, invalidos, sinSubir, parado);
     }
 
-    /** Cierra la pestaña (y el diagnóstico, si lo hay). Se puede llamar varias veces. */
-    private static void cerrar(Page page, DiagnosticoSubida diag) {
-        if (diag != null) diag.close();
+    /** Cierra la pestaña. Se puede llamar varias veces. */
+    private static void cerrar(Page page) {
         if (!page.isClosed()) page.close();
     }
 
@@ -219,14 +247,14 @@ public class Uploader {
     /**
      * Rellena el formulario completo y guarda como borrador.
      *
-     * @param diag TEMPORAL: si no es null, graba cómo avanzan las subidas y espera ENTER antes de guardar
+     * @throws CanceladoException si se pide parar antes de guardar (no se guarda nada)
+     * @throws ModeloDescartado   si al revisar la persona decide no guardarlo
      */
-    private void subir(Page page, ModelFolder m, boolean revisar, DiagnosticoSubida diag) {
+    private void subir(Page page, ModelFolder m, boolean revisar) {
         ModelMeta meta = m.meta();
-        if (diag != null) diag.archivos(m.cover().getFileName().toString(), m.model().getFileName().toString());
         // Se crea antes de elegir ningún archivo para que vea todas las subidas.
         // No hace falta cerrarlo: deja de escuchar cuando se cierra la pestaña.
-        VigilanteSubidas subidas = new VigilanteSubidas(page, progreso);
+        VigilanteSubidas subidas = new VigilanteSubidas(page, progreso, cancelacion);
 
         paso("Abriendo formulario");
         page.navigate(UPLOAD_URL);
@@ -249,10 +277,6 @@ public class Uploader {
         // --- Portada ---
         paso("Portada: " + m.cover().getFileName());
         elegirArchivo(page, page.locator(".el-upload-dragger").first(), m.cover());
-        if (diag != null) {
-            diag.marca("portada elegida");
-            diag.observar("portada", 15);
-        }
         subidas.esperar("la portada");
 
         // --- Título ---
@@ -312,11 +336,8 @@ public class Uploader {
         }
 
         // --- Paso 2: archivos ---
+        cancelacion.comprobar(); // punto seguro: aún no se ha subido ningún archivo grande
         paso("Siguiente paso: archivos");
-        if (diag != null) {
-            diag.foto("antes de Next Step");
-            diag.marca("pulso Next Step");
-        }
         page.getByRole(AriaRole.BUTTON, new Page.GetByRoleOptions().setName("Next Step, Add Files")).click();
         try {
             page.locator(".el-upload").filter(new Locator.FilterOptions().setHasText("Supported files: stl"))
@@ -331,10 +352,6 @@ public class Uploader {
         if (m.is3mf()) {
             paso("Perfil de impresión (3mf): " + m.model().getFileName());
             elegirArchivo(page, zonaSubida(page, "only supports single 3mf"), m.model());
-            if (diag != null) {
-                diag.marca("perfil .3mf elegido");
-                diag.foto("perfil .3mf");
-            }
             // No se espera aquí: el .3mf sigue subiendo mientras se rellena el resto
             // (comprobado que funciona) y se espera a todo junto antes de guardar.
 
@@ -361,28 +378,19 @@ public class Uploader {
                         "No encuentro la zona 'Print Profile Pictures'. Graba el selector con Codegen.");
             }
             elegirArchivo(page, zonaFotos, m.cover());
-            if (diag != null) {
-                diag.marca("imagen del perfil elegida");
-                diag.foto("imagen del perfil");
-            }
         }
         paso("Archivo del modelo: " + m.model().getFileName());
         elegirArchivo(page, zonaSubida(page, "Supported files: stl"), m.model());
-        if (diag != null) diag.marca("archivo del modelo elegido");
 
         // --- Esperar a que TODO esté subido (si algo falla o se atasca, no se guarda) ---
         subidas.esperar("los archivos");
-        if (diag != null) diag.esperarEnter(20);
 
-        if (revisar) {
-            progreso.info("   ⏸ Revisa el formulario. Pulsa 'Resume' en el Inspector para guardar el borrador.");
-            page.pause();
-        }
+        if (revisar && !revision.confirmar(m.name())) throw new ModeloDescartado();
 
         // --- Guardar como borrador ---
-        if (diag != null) diag.marca("pulso Save to draft");
+        // Último punto seguro: una vez pulsado "Save to draft" ya no se para hasta confirmarlo
+        cancelacion.comprobar();
         guardarBorrador(page);
-        if (diag != null) diag.observar("después de guardar", 5);
     }
 
     /**

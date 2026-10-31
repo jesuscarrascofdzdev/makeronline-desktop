@@ -60,6 +60,10 @@ import java.util.regex.Pattern;
  *   --sin-ventana  Chrome sin ventana (headless); si sale un captcha, se para
  *   --esperar      si el Uploader está en marcha, espera a que termine en vez de salir
  *
+ * Para pararlo sin dejar nada a medias: escribir "parar" y ENTER en la consola. Termina el
+ * modelo que esté bajando (descarga + like) y no empieza otro; las pausas y los captchas
+ * pendientes se cortan en el momento.
+ *
  * Ventana: por defecto Chrome se abre FUERA DE LA PANTALLA (no ocupa sitio, solo se ve en
  * la barra de tareas) y solo aparece delante si MakerOnline pide un captcha, para que lo
  * resuelvas tú. No se minimiza porque Chrome minimizado deja de pintar y Playwright se cuelga.
@@ -70,7 +74,7 @@ import java.util.regex.Pattern;
 public class Downloader {
 
     /** Se muestra al arrancar: así se sabe qué versión del código se está ejecutando. */
-    private static final String VERSION = "9 (fase 1b: eventos de progreso)";
+    private static final String VERSION = "10 (fase 1c: parar)";
 
     private static final String WEB = "https://www.makeronline.com";
     private static final int ULTIMOS_POR_DEFECTO = 10;
@@ -118,22 +122,31 @@ public class Downloader {
      * @param errores            usuarios o modelos que han fallado
      * @param carpetasConErrores carpetas de usuario con errores.txt y capturas error_<id>.png
      * @param simulado           true con --simular (no se ha descargado nada)
+     * @param parado             true si se ha parado a petición de la persona
      */
     public record Resumen(int descargados, int soloLike, int yaTenianLike, int errores,
-                          List<Path> carpetasConErrores, boolean simulado) {}
+                          List<Path> carpetasConErrores, boolean simulado, boolean parado) {}
 
     /** Dónde están la sesión de Chrome, usuarios.json, descargados.txt y las descargas. */
     private final Rutas rutas;
     /** A quién se le cuenta lo que va pasando (terminal o app). */
     private final Progreso progreso;
+    /** Si se pide parar, se para en el siguiente punto seguro. */
+    private final Cancelacion cancelacion;
     /** Ids de los modelos apuntados en descargados.txt. */
     private final Set<Long> registrados = new HashSet<>();
     /** La ventana de Chrome de esta ejecución (ver Ventana). */
     private Ventana ventana;
 
-    public Downloader(Rutas rutas, Progreso progreso) {
+    public Downloader(Rutas rutas, Progreso progreso, Cancelacion cancelacion) {
         this.rutas = rutas;
         this.progreso = progreso;
+        this.cancelacion = cancelacion;
+    }
+
+    /** Sin opción de parar. */
+    public Downloader(Rutas rutas, Progreso progreso) {
+        this(rutas, progreso, new Cancelacion());
     }
 
     /** Pausa entre descargas: entre S y S + MARGEN_ESPERA segundos al azar (--espera=S). */
@@ -144,6 +157,8 @@ public class Downloader {
     private static final class Estado {
         int descargados, soloLike, saltados, errores, restantes;
         boolean pausar, parar;
+        /** Se ha parado a petición de la persona. */
+        boolean cancelado;
         /** Cuándo empezó el último modelo que generó tráfico: la pausa se cuenta desde ahí. */
         long inicioUltimo;
         final Set<Path> conErrores = new LinkedHashSet<>();
@@ -246,9 +261,11 @@ public class Downloader {
         }
         Rutas rutas = Rutas.carpetaActual();
         Progreso progreso = new ProgresoConsola();
+        Cancelacion cancelacion = new Cancelacion();
         // Solo un programa del agente a la vez: comparten chrome-profile/
         try (AgentLock lock = AgentLock.acquire(rutas.getCandado(), "Downloader", op.esperar(), progreso)) {
-            new Downloader(rutas, progreso).ejecutar(op);
+            EntradaConsola.iniciar(cancelacion, progreso);
+            new Downloader(rutas, progreso, cancelacion).ejecutar(op);
         } catch (AgenteException e) {
             progreso.error(e.getMessage());
             System.exit(e.getCodigoSalida());
@@ -264,7 +281,7 @@ public class Downloader {
         progreso.info("Downloader · versión " + VERSION);
         // Usuario por argumento → solo ese; si no, todos los de usuarios.json
         List<String> entradas = op.usuario() != null ? List.of(op.usuario()) : leerLista();
-        if (entradas.isEmpty()) return new Resumen(0, 0, 0, 0, List.of(), op.simular());
+        if (entradas.isEmpty()) return new Resumen(0, 0, 0, 0, List.of(), op.simular(), false);
         if (!Files.isDirectory(rutas.getPerfilChrome())) {
             throw new AgenteException("No hay sesión guardada. Ejecuta primero SaveSession.");
         }
@@ -297,19 +314,28 @@ public class Downloader {
             Api api = new Api(ctx.request(), token);
 
             // --- Repaso de todos los usuarios ---
-            for (int k = 0; k < entradas.size() && !est.parar; k++) {
-                String entrada = entradas.get(k);
-                progreso.usuario(k + 1, entradas.size(), entrada);
-                try {
-                    procesarUsuario(page, ctx, api, entrada, op, est);
-                } catch (Exception e) {
-                    est.errores++;
-                    progreso.error("No se ha podido revisar " + entrada + ": " + primeraLinea(e));
+            try {
+                for (int k = 0; k < entradas.size() && !est.parar; k++) {
+                    cancelacion.comprobar();
+                    String entrada = entradas.get(k);
+                    progreso.usuario(k + 1, entradas.size(), entrada);
+                    try {
+                        procesarUsuario(page, ctx, api, entrada, op, est);
+                    } catch (CanceladoException e) {
+                        throw e;
+                    } catch (Exception e) {
+                        est.errores++;
+                        progreso.error("No se ha podido revisar " + entrada + ": " + primeraLinea(e));
+                    }
                 }
+            } catch (CanceladoException e) {
+                // No es un error: lo que estaba a medias no ha llegado a empezar (ver los puntos seguros)
+                est.cancelado = true;
             }
 
             long min = Duration.ofMillis(System.currentTimeMillis() - inicio).toMinutes();
-            progreso.info(String.format("%n======== Terminado en %d min ========", min));
+            progreso.info(String.format("%n======== %s en %d min ========",
+                    est.cancelado ? "Parado (lo has pedido tú)" : "Terminado", min));
             if (op.simular()) {
                 progreso.info("(--simular: no se ha descargado nada ni se ha dado ningún like)");
             } else {
@@ -322,7 +348,7 @@ public class Downloader {
             }
         }
         return new Resumen(est.descargados, est.soloLike, est.saltados, est.errores,
-                List.copyOf(est.conErrores), op.simular());
+                List.copyOf(est.conErrores), op.simular(), est.cancelado);
     }
 
     // ================================================================ un usuario
@@ -357,6 +383,7 @@ public class Downloader {
 
         int antes = est.descargados;
         for (int i = 0; i < pendientes.size(); i++) {
+            cancelacion.comprobar(); // punto seguro: entre un modelo y el siguiente
             if (est.restantes <= 0) {
                 progreso.info("Alcanzado el máximo de descargas (--max): paro aquí.");
                 est.parar = true;
@@ -375,6 +402,8 @@ public class Downloader {
                     case SOLO_LIKE -> { est.soloLike++; est.pausar = true; est.inicioUltimo = inicio; }
                     case YA_TENIA_LIKE -> est.saltados++;
                 }
+            } catch (CanceladoException e) {
+                throw e;
             } catch (CaptchaException e) {
                 est.errores++;
                 est.parar = true;
@@ -604,6 +633,8 @@ public class Downloader {
             clic.run();
             long limite = System.currentTimeMillis() + 120_000;
             while (descarga.get() == null) {
+                // Punto seguro: la descarga aún no ha empezado (o se espera un captcha)
+                cancelacion.comprobar();
                 JsonNode j = fallo.getAndSet(null);
                 if (j != null) {
                     int code = j.path("code").asInt();
@@ -694,6 +725,8 @@ public class Downloader {
             try {
                 long limite = System.currentTimeMillis() + Ventana.TIEMPO_CAPTCHA_MS;
                 while (!icono(corazon).contains("ic_like_click")) {
+                    // Punto seguro: ya está descargado y apuntado; la próxima vez solo faltará el like
+                    cancelacion.comprobar();
                     if (System.currentTimeMillis() > limite) {
                         throw new CaptchaException("Modelo descargado, pero el captcha del like no se ha resuelto a tiempo");
                     }
@@ -822,6 +855,7 @@ public class Downloader {
             int ultima = Math.max(1, data.path("page").path("last_page").asInt(1));
             if (limite <= 0) progreso.leyendoPaginas(pagina, ultima);
             if (pagina >= ultima || lista.isEmpty()) break;
+            cancelacion.comprobar();
             Thread.sleep(800 + ThreadLocalRandom.current().nextInt(700)); // sin prisas
         }
         return limite > 0 && out.size() > limite ? new ArrayList<>(out.subList(0, limite)) : out;
@@ -986,7 +1020,12 @@ public class Downloader {
         long restanteMs = Math.round(objetivoS * 1000) - (System.currentTimeMillis() - est.inicioUltimo);
         if (restanteMs <= 0) return;
         progreso.pausa(Math.round(restanteMs / 1000.0));
-        page.waitForTimeout(restanteMs);
+        // A trozos de medio segundo, para poder parar en mitad de la pausa
+        long fin = System.currentTimeMillis() + restanteMs;
+        while (System.currentTimeMillis() < fin) {
+            cancelacion.comprobar();
+            page.waitForTimeout(Math.min(500, fin - System.currentTimeMillis()));
+        }
     }
 
     /** Nombre válido para una carpeta de Windows. */

@@ -6,7 +6,7 @@ App de escritorio para subir y descargar modelos 3D de [MakerOnline](https://www
 - La sesión de MakerOnline (perfil de Chrome) **nunca sale de tu ordenador**.
 - Los captchas **no se saltan**: se enseña la ventana para que los resuelva la persona.
 
-> **Estado: fase 1 en curso.** El código de la herramienta de terminal está en el módulo `core` y se está preparando para usarlo desde la app (hechos: 1a, las rutas están en `Rutas`; 1b, `core` avisa de lo que hace con `Progreso`; y el Uploader ya espera a que terminen las subidas y confirma el guardado del borrador). La app de escritorio todavía es solo una ventana de prueba.
+> **Estado: fase 1 en curso.** El código de la herramienta de terminal está en el módulo `core` y se está preparando para usarlo desde la app (hechos: 1a, las rutas están en `Rutas`; 1b, `core` avisa de lo que hace con `Progreso`, y el Uploader espera a que terminen las subidas y confirma el borrador; 1c, se puede parar sin dejar nada a medias; 1d, `--revisar` sin Inspector). La app de escritorio todavía es solo una ventana de prueba.
 
 ---
 
@@ -40,11 +40,12 @@ Arriba a la derecha, en el desplegable de ejecución, está la carpeta **MakerOn
 | Guardar sesión | Abre Chrome para iniciar sesión en MakerOnline. Solo la primera vez o cuando caduque |
 | Descargar (simular) | Lista lo que descargaría, sin descargar nada |
 | Descargar | Descarga los modelos nuevos de los usuarios de `usuarios.json` |
-| Subir (revisar) | Sube los modelos de `subidas/pendientes/` y se para antes de guardar cada borrador |
+| Subir (revisar) | Sube los modelos de `subidas/pendientes/` y, antes de guardar cada borrador, te deja mirarlo en Chrome: ENTER lo guarda; `no` + ENTER lo descarta (se queda en `pendientes/`) |
 | Subir | Sube los modelos de `subidas/pendientes/` como borrador |
-| Subir (diagnóstico) | **Temporal.** Sube como siempre, pero graba en `subidas/diagnostico_….txt` cómo avanzan las subidas y espera a que pulses ENTER en la consola antes de guardar |
 | Codegen | Chrome con sesión y el Playwright Inspector, para grabar selectores |
 | App de escritorio | Abre la app de escritorio |
+
+**Para parar Descargar o Subir sin dejar nada a medias**, escribe `parar` en la consola y pulsa ENTER. El Downloader termina el modelo que esté bajando y no empieza otro; el Uploader no guarda el borrador que tenga a medias, que se queda en `pendientes/`. El botón *Stop* de IntelliJ, en cambio, lo corta en seco.
 
 Los programas de terminal se ejecutan desde la raíz del repo. Ahí se crean `chrome-profile/`, `usuarios.json`, `descargados.txt`, `subidas/` y `modelos-descargados/`. **Nada de eso se sube a git.**
 
@@ -58,7 +59,9 @@ Los programas de terminal se ejecutan desde la raíz del repo. Ahí se crean `ch
 
 - **Stack:** Gradle 8.14.3 (Kotlin DSL) con varios módulos. Versiones en `gradle/libs.versions.toml`: Kotlin 2.2.20, Compose Multiplatform 1.9.3, Playwright para Java 1.52.0 y Jackson 2.18.2. JDK 21 (toolchain).
 - **`core`:** paquete `dev.jefe.makeronline`. El código heredado está en Java (`src/main/java`) y las piezas nuevas en Kotlin (`src/main/kotlin`). Programas con `main`: `SaveSession`, `Uploader`, `Downloader` y `Codegen`. Todas las rutas de datos salen de `Rutas`. Los programas de terminal usan `Rutas.carpetaActual()`, es decir, el directorio de trabajo, que debe ser la raíz del repo.
-- **Cómo se usa `core`:** `new Downloader(rutas, progreso).ejecutar(opciones)` y `new Uploader(rutas, progreso).ejecutar(opciones)` devuelven un `Resumen`.
+- **Cómo se usa `core`:** `new Downloader(rutas, progreso, cancelacion).ejecutar(opciones)` y `new Uploader(rutas, progreso, cancelacion, revision).ejecutar(opciones)` devuelven un `Resumen`.
+  - `Cancelacion.pedir()` pide parar desde cualquier hilo. `core` lo comprueba solo en puntos seguros (entre modelos, en pausas, esperando subidas o captchas) y entonces lanza `CanceladoException`, que no es un error.
+  - `Revision` decide si se guarda cada borrador con `--revisar`. En la terminal es `RevisionConsola`.
   - La lógica no imprime: avisa con la interfaz `Progreso`. En la terminal se usa `ProgresoConsola`.
   - Lo que impide seguir (sin sesión, candado ocupado, web caída) se lanza como `AgenteException`.
   - Solo los `main` imprimen directamente (ayuda y argumentos) y llaman a `System.exit`.

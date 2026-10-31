@@ -26,6 +26,7 @@ import java.util.function.Consumer
 class VigilanteSubidas(
     private val page: Page,
     private val progreso: Progreso,
+    private val cancelacion: Cancelacion,
 ) : AutoCloseable {
 
     private val enMarcha = IdentityHashMap<Request, Long>()
@@ -54,6 +55,7 @@ class VigilanteSubidas(
      * @param que para los mensajes: "la portada", "los archivos"...
      * @throws IllegalStateException si una subida falla, si la web muestra un error, si
      *         lleva [SIN_AVANCE_MS] sin avanzar o si se pasa de [TOPE_MS]
+     * @throws CanceladoException si mientras tanto se pide parar (no se guarda nada)
      */
     fun esperar(que: String) {
         val inicio = System.currentTimeMillis()
@@ -65,6 +67,7 @@ class VigilanteSubidas(
         var avisado = false
 
         while (true) {
+            cancelacion.comprobar()
             val ahora = System.currentTimeMillis()
 
             if (fallos.isNotEmpty()) {
