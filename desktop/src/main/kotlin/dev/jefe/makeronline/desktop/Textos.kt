@@ -9,6 +9,7 @@ object Textos {
 
     // ------------------------------------------------------------ menú
     const val MENU_SESION = "Sesión"
+    const val MENU_SUBIR = "Subir"
     const val MENU_DESCARGAR = "Descargar"
 
     // ------------------------------------------------------------ sesión
@@ -44,6 +45,7 @@ object Textos {
     const val TAREA_SIMULANDO = "Simulando…"
     const val TAREA_DESCARGANDO = "Descargando…"
     const val TAREA_BUSCANDO_USUARIO = "Buscando un usuario…"
+    const val TAREA_SUBIENDO = "Subiendo…"
 
     // ------------------------------------------------------------ descargar
     const val DESCARGAR_TITULO = "Descargar"
@@ -122,6 +124,55 @@ object Textos {
         "Los cambios se guardan al momento en usuarios.json. La primera vez se guarda una copia del " +
             "archivo tal como estaba en usuarios.json.bak (los comentarios que tuviera se quedan ahí)."
     const val CERRAR = "Cerrar"
+
+    // ------------------------------------------------------------ subir
+    const val SUBIR_TITULO = "Subir"
+    const val SUBIR_EXPLICACION =
+        "Sube como borrador los modelos de la carpeta de pendientes. Cada modelo va en su carpeta, con los " +
+            "nombres que quieras: el modelo (.3mf o .stl), al menos una imagen (.jpg o .png; la portada es la " +
+            "que se llama portada, cover o como la carpeta, o si no la primera) y los textos en un .json o un " +
+            ".txt. Al terminar, cada carpeta pasa a subidos/ (o a errores/, con una captura, si algo falla)."
+    fun pendientesTitulo(n: Int) = "Pendientes ($n)"
+    const val ABRIR_PENDIENTES = "Abrir la carpeta"
+    const val SOLTAR_AQUI =
+        "Arrastra aquí las carpetas de tus modelos, o una carpeta que tenga una carpeta por modelo. " +
+            "Se copian a pendientes; las tuyas no se tocan."
+    const val SUELTA_AHORA = "Suéltalas aquí"
+    const val ANADIR_CARPETAS = "Añadir carpetas…"
+    const val ELEGIR_CARPETAS = "Elige las carpetas de los modelos"
+    const val COPIANDO = "Copiando a pendientes…"
+    fun carpetasAnadidas(nombres: List<String>) = "✔ Añadidas a pendientes: " + nombres.joinToString(", ")
+    fun noEsCarpeta(nombre: String) = "✘ $nombre no es una carpeta: arrastra la carpeta del modelo, no sus archivos."
+    fun yaEnPendientes(nombre: String) = "✘ $nombre ya está en pendientes."
+    fun contienePendientes(nombre: String) = "✘ $nombre contiene la propia carpeta de pendientes: no se copia."
+    fun yaExisteEnPendientes(nombre: String) =
+        "✘ Ya hay una carpeta $nombre en pendientes: cámbiale el nombre a una de las dos."
+    fun demasiadosArchivos(nombre: String, max: Int) =
+        "✘ $nombre tiene más de $max archivos: no parece la carpeta de un modelo."
+    fun noSePuedeCopiar(nombre: String, motivo: String) = "✘ No he podido copiar $nombre: $motivo"
+    const val NADA_EN_PENDIENTES = "No hay nada en pendientes."
+    const val LISTA_PARA_SUBIR = "Lista para subir"
+    fun todasLasValidas(n: Int) = "Todas las que están bien ($n)"
+    const val SOLO_LA_SELECCIONADA = "Solo la seleccionada"
+    const val REVISAR = "Revisar cada borrador antes de guardarlo"
+    const val REVISAR_AYUDA =
+        "Con todo subido, la app espera a que mires el formulario en Chrome y pulses Guardar borrador o Descartar."
+    const val SUBIR = "Subir"
+    const val SUBIR_AYUDA = "Chrome se abre a la vista mientras sube."
+    fun revisarAhora(modelo: String) =
+        "Revisa el formulario de $modelo en la ventana de Chrome. Cuando lo hayas mirado, elige aquí:"
+    const val GUARDAR_BORRADOR = "Guardar borrador"
+    const val DESCARTAR = "Descartar (se queda en pendientes)"
+    const val PARANDO_SUBIDA = "Parando: lo que no se haya guardado se queda en pendientes…"
+    const val RESUMEN_SUBIDA_PARADA = "Parado (lo has pedido tú). Lo que no se ha guardado sigue en pendientes."
+    fun resumenSubida(subidos: Int, conError: Int, invalidos: Int, sinSubir: Int) =
+        "$subidos subidos · $conError con error · $invalidos no válidos · $sinSubir siguen en pendientes"
+    const val ABRIR_SUBIDOS = "Abrir subidos"
+    const val ABRIR_ERRORES = "Abrir errores"
+    fun verError(carpeta: String) = "Ver el error de $carpeta"
+    const val ERROR_SIN_CARPETA = "Elige una carpeta de la lista, o marca \"Todas las que están bien\"."
+    const val ERROR_CARPETA_CON_PROBLEMAS = "La carpeta seleccionada tiene problemas: arréglalos antes de subirla."
+    const val ERROR_NADA_PARA_SUBIR = "No hay ninguna carpeta lista para subir en pendientes."
 
     // ------------------------------------------------------------ errores
     fun errorInesperado(e: Throwable) =

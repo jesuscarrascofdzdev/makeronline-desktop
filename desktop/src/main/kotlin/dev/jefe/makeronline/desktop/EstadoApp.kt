@@ -9,6 +9,7 @@ import java.nio.file.Path
 /** Las pantallas del menú lateral. */
 enum class Pantalla(val titulo: String) {
     SESION(Textos.MENU_SESION),
+    SUBIR(Textos.MENU_SUBIR),
     DESCARGAR(Textos.MENU_DESCARGAR),
 }
 
@@ -23,6 +24,7 @@ class EstadoApp(val rutas: Rutas) {
     val sesion = EstadoSesion(rutas, hilo, ocupacion)
     /** Lo que se recuerda de una vez para otra (ajustes.properties). */
     val ajustes = Ajustes(rutas.ajustes)
+    val subida = EstadoSubida(rutas, hilo, ocupacion)
     val descarga = EstadoDescarga(rutas, hilo, ocupacion, ajustes)
     /** La ventana de añadir y quitar usuarios (botón "Editar" de Descargar). */
     val edicion = EstadoEdicion(rutas, hilo, ocupacion, descarga)
@@ -31,6 +33,7 @@ class EstadoApp(val rutas: Rutas) {
 
     /** Al cerrar la ventana: para lo que esté en marcha, cierra Chrome y para el hilo del navegador. */
     fun cerrar() {
+        subida.alCerrarApp()
         descarga.alCerrarApp()
         sesion.alCerrarApp()
         hilo.close()

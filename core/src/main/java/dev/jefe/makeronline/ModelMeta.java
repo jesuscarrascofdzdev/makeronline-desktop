@@ -4,7 +4,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Contenido de info.json de cada modelo.
+ * Los textos de cada modelo: salen del .json (info.json) o del .txt (ver TextosModelo).
  *
  * Obligatorios: title, description, tags, category.
  * Opcionales:   license   (por defecto "CC0 (aka CC Zero)" — el principio del texto de la opción de licencia)
@@ -24,12 +24,14 @@ public record ModelMeta(
     /** Devuelve la lista de problemas; vacía si todo está bien. */
     public List<String> validate() {
         List<String> errors = new ArrayList<>();
-        if (blank(title)) errors.add("Falta 'title'");
-        if (blank(description)) errors.add("Falta 'description'");
+        // Cada mensaje dice cómo se llama el dato en el .json y en el .txt
+        if (blank(title)) errors.add("Falta el título (\"title\" en el .json, \"Título:\" en el .txt)");
+        if (blank(description)) errors.add("Falta la descripción (\"description\" en el .json, \"Descripción:\" en el .txt)");
         if (tags == null || tags.isEmpty() || tags.stream().anyMatch(ModelMeta::blank))
-            errors.add("'tags' tiene que tener al menos un tag y ninguno vacío");
+            errors.add("Faltan las etiquetas: al menos una y ninguna vacía (\"tags\" en el .json, \"Etiquetas:\" en el .txt)");
         if (category == null || category.size() != 2 || category.stream().anyMatch(ModelMeta::blank))
-            errors.add("'category' tiene que tener 2 niveles, p. ej. [\"Toys&Games\", \"Action Figures\"]");
+            errors.add("La categoría tiene que tener 2 niveles: [\"Toys&Games\", \"Action Figures\"] en el .json, "
+                    + "\"Categoría: Toys&Games > Action Figures\" en el .txt");
         return errors;
     }
 

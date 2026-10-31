@@ -64,8 +64,11 @@ public class Uploader {
      * @param sinSubir  no se han guardado porque se ha parado o se han descartado al revisar
      *                  (siguen en pendientes/)
      * @param parado    true si se ha parado a petición de la persona
+     * @param carpetasConError dónde han quedado en errores/ las que han fallado o no eran válidas
+     *                         (cada una con error.txt y, si falló al subir, error.png)
      */
-    public record Resumen(int subidos, int conError, int invalidos, int sinSubir, boolean parado) {}
+    public record Resumen(int subidos, int conError, int invalidos, int sinSubir, boolean parado,
+                          List<Path> carpetasConError) {}
 
     /** La persona ha decidido no guardar este borrador al revisarlo. */
     private static final class ModeloDescartado extends RuntimeException {
@@ -149,22 +152,23 @@ public class Uploader {
 
         if (carpetas.isEmpty()) {
             progreso.info("No hay nada en " + pendientes.toAbsolutePath());
-            return new Resumen(0, 0, 0, 0, false);
+            return new Resumen(0, 0, 0, 0, false, List.of());
         }
         int invalidos = 0;
+        List<Path> enErrores = new ArrayList<>();
         for (Path dir : carpetas) {
             try {
                 listos.add(ModelFolder.load(dir));
                 progreso.correcto(dir.getFileName() + " validado");
             } catch (IllegalStateException | IOException e) {
                 progreso.error(dir.getFileName() + ":\n   " + e.getMessage().replace("\n", "\n   "));
-                moverAErrores(dir, e.getMessage());
+                anotar(enErrores, moverAErrores(dir, e.getMessage()));
                 invalidos++;
             }
         }
         if (listos.isEmpty()) {
             progreso.info("Ningún modelo válido. Revisa " + rutas.getErrores() + ".");
-            return new Resumen(0, 0, invalidos, 0, false);
+            return new Resumen(0, 0, invalidos, 0, false, enErrores);
         }
 
         // 2) Subir los válidos
@@ -201,7 +205,7 @@ public class Uploader {
                     captura(page, m.dir().resolve("error.png"));
                     // Primero se cierra la pestaña: así Chrome deja de leer los archivos y Windows deja moverlos
                     cerrar(page);
-                    moverAErrores(m.dir(), e.toString());
+                    anotar(enErrores, moverAErrores(m.dir(), e.toString()));
                     ko++;
                 } finally {
                     cerrar(page);
@@ -223,7 +227,7 @@ public class Uploader {
         }
         progreso.info(String.format("%n%s: %d subidos, %d con error.", parado ? "Parado" : "Terminado", ok, ko)
                 + (sinSubir > 0 ? " " + sinSubir + " siguen en pendientes/." : ""));
-        return new Resumen(ok, ko, invalidos, sinSubir, parado);
+        return new Resumen(ok, ko, invalidos, sinSubir, parado, enErrores);
     }
 
     /** Cierra la pestaña. Se puede llamar varias veces. */
@@ -252,6 +256,7 @@ public class Uploader {
      */
     private void subir(Page page, ModelFolder m, boolean revisar) {
         ModelMeta meta = m.meta();
+        for (String aviso : m.avisos()) progreso.nota(aviso);
         // Se crea antes de elegir ningún archivo para que vea todas las subidas.
         // No hace falta cerrarlo: deja de escuchar cuando se cierra la pestaña.
         VigilanteSubidas subidas = new VigilanteSubidas(page, progreso, cancelacion);
@@ -275,8 +280,8 @@ public class Uploader {
         page.getByRole(AriaRole.BUTTON, new Page.GetByRoleOptions().setName("Submit")).click();
 
         // --- Portada ---
-        paso("Portada: " + m.cover().getFileName());
-        elegirArchivo(page, page.locator(".el-upload-dragger").first(), m.cover());
+        paso("Portada: " + m.portada().getFileName());
+        elegirArchivo(page, page.locator(".el-upload-dragger").first(), m.portada());
         subidas.esperar("la portada");
 
         // --- Título ---
@@ -349,9 +354,9 @@ public class Uploader {
                     + (avisos.isBlank() ? "(ninguno)" : avisos));
         }
 
-        if (m.is3mf()) {
-            paso("Perfil de impresión (3mf): " + m.model().getFileName());
-            elegirArchivo(page, zonaSubida(page, "only supports single 3mf"), m.model());
+        if (m.perfil() != null) {
+            paso("Perfil de impresión (3mf): " + m.perfil().getFileName());
+            elegirArchivo(page, zonaSubida(page, "only supports single 3mf"), m.perfil());
             // No se espera aquí: el .3mf sigue subiendo mientras se rellena el resto
             // (comprobado que funciona) y se espera a todo junto antes de guardar.
 
@@ -367,7 +372,7 @@ public class Uploader {
             }
             tituloPerfil.fill(meta.title());
 
-            paso("Imagen del perfil de impresión: " + m.cover().getFileName());
+            paso("Imagen del perfil de impresión: " + m.portada().getFileName());
             Locator zonaFotos = page.locator(".el-form-item")
                     .filter(new Locator.FilterOptions().setHasText("Print Profile Pictures"))
                     .locator(".el-upload").first();
@@ -377,10 +382,10 @@ public class Uploader {
                 throw new IllegalStateException(
                         "No encuentro la zona 'Print Profile Pictures'. Graba el selector con Codegen.");
             }
-            elegirArchivo(page, zonaFotos, m.cover());
+            elegirArchivo(page, zonaFotos, m.portada());
         }
-        paso("Archivo del modelo: " + m.model().getFileName());
-        elegirArchivo(page, zonaSubida(page, "Supported files: stl"), m.model());
+        paso("Archivo del modelo: " + m.archivoModelo().getFileName());
+        elegirArchivo(page, zonaSubida(page, "Supported files: stl"), m.archivoModelo());
 
         // --- Esperar a que TODO esté subido (si algo falla o se atasca, no se guarda) ---
         subidas.esperar("los archivos");
@@ -493,16 +498,23 @@ public class Uploader {
         }
     }
 
-    private void moverAErrores(Path dir, String mensaje) {
+    /** Escribe error.txt y mueve la carpeta a errores/. Devuelve dónde ha quedado, o null si no se ha podido. */
+    private Path moverAErrores(Path dir, String mensaje) {
         try {
             Files.writeString(dir.resolve("error.txt"),
                     LocalDateTime.now().format(STAMP) + "\n" + mensaje + "\n",
                     StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
             Path destino = mover(dir, rutas.getErrores());
             progreso.info("   Movido a " + destino);
+            return destino;
         } catch (IOException e) {
             progreso.error("No se pudo mover a errores/: " + e.getMessage());
+            return null;
         }
+    }
+
+    private static void anotar(List<Path> lista, Path carpeta) {
+        if (carpeta != null) lista.add(carpeta);
     }
 
     /**

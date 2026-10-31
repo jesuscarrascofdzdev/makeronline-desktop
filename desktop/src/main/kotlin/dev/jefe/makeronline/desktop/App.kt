@@ -42,6 +42,7 @@ fun App(app: EstadoApp) {
                 Box(Modifier.weight(1f).fillMaxHeight()) {
                     when (app.pantalla) {
                         Pantalla.SESION -> PantallaSesion(app.sesion, app.rutas.datos.toString(), alcance)
+                        Pantalla.SUBIR -> PantallaSubir(app.subida, app.rutas, alcance)
                         Pantalla.DESCARGAR -> PantallaDescargar(app.descarga, app.edicion, app.rutas.descargas, alcance)
                     }
                 }

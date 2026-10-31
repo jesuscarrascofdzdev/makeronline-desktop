@@ -11,9 +11,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
@@ -25,7 +22,6 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -76,7 +72,7 @@ fun PantallaDescargar(
                 PanelProgreso(d)
                 PanelResumen(d, carpetaDescargas)
                 d.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-                Mensajes(d, Modifier.weight(1f))
+                ListaMensajes(d.mensajes, Modifier.weight(1f))
             }
         }
     }
@@ -260,58 +256,5 @@ private fun PanelResumen(d: EstadoDescarga, carpetaDescargas: java.nio.file.Path
                 }
             }
         }
-    }
-}
-
-@Composable
-private fun Mensajes(d: EstadoDescarga, modifier: Modifier) {
-    val lista = rememberLazyListState()
-    // Siempre se ve lo último
-    LaunchedEffect(d.mensajes.size) {
-        if (d.mensajes.isNotEmpty()) lista.scrollToItem(d.mensajes.size - 1)
-    }
-    Card(modifier.fillMaxWidth()) {
-        Column(Modifier.fillMaxSize().padding(12.dp)) {
-            Text(Textos.MENSAJES, style = MaterialTheme.typography.titleSmall)
-            if (d.mensajes.isEmpty()) {
-                Text(Textos.SIN_MENSAJES, style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-            LazyColumn(Modifier.fillMaxSize(), state = lista) {
-                items(d.mensajes) { m ->
-                    val color = when (m.tipo) {
-                        TipoMensaje.ERROR, TipoMensaje.AVISO -> MaterialTheme.colorScheme.error
-                        TipoMensaje.CORRECTO, TipoMensaje.LIKE -> VERDE
-                        TipoMensaje.NOTA, TipoMensaje.SALTADO -> MaterialTheme.colorScheme.onSurfaceVariant
-                        else -> MaterialTheme.colorScheme.onSurface
-                    }
-                    val texto = m.texto.trim('\n', '\r')
-                    Text(
-                        if (m.tipo.simbolo.isEmpty()) texto else m.tipo.simbolo + " " + texto,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = color,
-                        modifier = Modifier.padding(vertical = 1.dp),
-                    )
-                }
-            }
-        }
-    }
-}
-
-/** Un botón redondo de "elegir una opción" con su texto. */
-@Composable
-private fun Eleccion(texto: String, elegida: Boolean, activa: Boolean, alElegir: () -> Unit) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        RadioButton(selected = elegida, onClick = alElegir, enabled = activa)
-        Text(texto, style = MaterialTheme.typography.bodyMedium)
-    }
-}
-
-/** Una casilla de marcar con su texto. */
-@Composable
-private fun Casilla(texto: String, marcada: Boolean, activa: Boolean, alCambiar: (Boolean) -> Unit) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Checkbox(checked = marcada, onCheckedChange = alCambiar, enabled = activa)
-        Text(texto, style = MaterialTheme.typography.bodyMedium)
     }
 }
